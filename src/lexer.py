@@ -30,6 +30,7 @@ keywords = [
     "true",
     "false",
     "NULL",
+    "sizeof",
 ]
 
 # ply requires keywords to be placed inside a dict
@@ -44,7 +45,6 @@ tokens = [
     # ID
     "IDENTIFIER",
     # Constant
-    "BOOL_CONSTANT",
     "INTEGER_CONSTANT",
     "FLOAT_CONSTANT",
     "CHAR_CONSTANT",
@@ -199,7 +199,7 @@ t_ignore = " \t"
 # Error function
 def t_error(t):
     print(
-        f"Illegal character {t.value[0]} at line {t.lineno} column {find_column(inp, t)}"
+        f"Illegal character {t.value[0]} at line {t.lineno} column {find_column(lexer.inp, t)}"
     )
     t.lexer.skip(1)
 
@@ -210,7 +210,6 @@ def find_column(input, token):
     return token.lexpos - line_start
 
 
-# Made changes, pehle exact tha
 def main_lexer(lexer, input_file):
     lexer.input(input_file)
     list_of_tokens = []
@@ -229,6 +228,8 @@ def main_lexer(lexer, input_file):
     )
     print(final_list)
 
+
+lexer = lex.lex()
 
 if __name__ == "__main__":
 
@@ -250,4 +251,5 @@ if __name__ == "__main__":
     if args.out is not None:
         sys.stdout = open(args.out, "w")
 
+    lexer.inp = inp
     main_lexer(lexer, inp)

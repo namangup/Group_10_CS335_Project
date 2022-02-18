@@ -2,6 +2,11 @@
 __pycache__/
 *.py[cod]
 *$py.class
+.vscode/
 
 # Tests
 out/
+
+# Files generated in debug mode
+src/parser.out
+src/parsetab.py
