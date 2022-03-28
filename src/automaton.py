@@ -14,16 +14,15 @@ for i in range(len(lines)):
 
 n_states = len(state_lineno.keys())
 
-n_states = 150
 for i in range(n_states):
     graph.add_node(pydot.Node("I" + str(i), shape="circle"))
 
 for i in range(n_states):
     start = state_lineno[i]
-    # if i == (n_states - 1):
-    #     end = len(lines)
-    # else:
-    end = state_lineno[i + 1]
+    if i == (n_states - 1):
+        end = len(lines)
+    else:
+        end = state_lineno[i + 1]
     for j in range(start, end):
         state_match = re.findall(r"shift and go to state \d+", lines[j])
         if len(state_match) > 0:
@@ -32,4 +31,4 @@ for i in range(n_states):
             edge = edge_match[0]
             graph.add_edge(pydot.Edge("I" + str(i), "I" + str(next_state), label=edge))
 
-graph.write_raw("src/automaton.dot")
+graph.write_raw("dot/automaton.dot")

@@ -40,9 +40,9 @@ int main()
     do
     {
         printf("Hey\n");
-    } while (itr < 2)
+    } while (itr < 2);
 
-        int arr[5][10];
+    int arr[5][10];
     arr[5][9] = 10;
     arr[0] = 14;
     arr[1][1][1] = 2;

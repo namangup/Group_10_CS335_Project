@@ -7,6 +7,7 @@ __pycache__/
 # Tests
 out/
 
-# Files generated in debug mode
+# Temporary Files
 src/parser.out
 src/parsetab.py
+tmp/

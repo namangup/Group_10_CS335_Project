@@ -1,7 +1,7 @@
 # ccpy
 C compiler implemented in Python for x86, CS335 2021-22 II, Group No. 10
 
-Our implementation of the C compiler follows grammar rules for ANSI C (C89). One of major differences in this version of C is the need to declare variables, functions, arrays etc. at the start of the scope. Therefore our compiler would be able to work with code that is compliant with C89 standards.
+Our implementation of the C compiler follows grammar rules for ANSI C (C89). One of major differences in this version of C is the need to declare variables at the start of the scope. Therefore our compiler would be able to work with code that is compliant with C89 standards.
 
 Source Language : C (ANSI C89)\
 Implementation Language : Python 3 \
@@ -25,6 +25,7 @@ optional arguments:
 
 ### Parser
 ```
+python src/parser.py -h
 usage: parser.py [-h] [-d] [-o OUT] infile
 
 positional arguments:

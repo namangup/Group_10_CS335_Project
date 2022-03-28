@@ -1,7 +1,7 @@
 PYTHON=python3
 SRC=./src
 LEXER_TEST=./test/lexer
-PARSER_TEST=./test/parser
+PARSER_TEST=./test/semantics
 
 install:
 	$(PYTHON) -m pip install --ignore-installed -r ./requirements.txt
@@ -14,9 +14,13 @@ lexer-tests:
 
 parser-tests:
 	mkdir -p out/parser
+	mkdir -p dot/pdf
 	for i in {1..5} ; do \
-		$(PYTHON) -Wignore $(SRC)/parser.py -o out/parser/$$i.out $(PARSER_TEST)/test$$i.c; \
+		$(PYTHON) -Wignore $(SRC)/parser.py -o out/parser/$$i.csv $(PARSER_TEST)/test$$i.c; \
+		dot -Tpdf -o dot/pdf/$$i.pdf dot/$$i.dot; \
 	done
 
 clean:
-	rm -r out
+	-rm dot/{1..5}.dot
+	-rm dot/pdf/{1..5}.pdf
+	-rm -r out

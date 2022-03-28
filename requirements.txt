@@ -1,3 +1,5 @@
 ply==3.11
 tabulate==0.8.9
 pydot==1.4.2
+pygraphviz==1.9
+pandas==1.4.1
