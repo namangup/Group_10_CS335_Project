@@ -6,11 +6,14 @@ from lexer import Lexer, error_func
 import argparse
 import sys
 import pygraphviz as pgv
-from symboltable import SymbolTable,bcolors
+from symboltable import SymbolTable, bcolors
+from three_address_code import three_address_code
+import struct, json, copy
 
 num_nodes = 0
 graph = pgv.AGraph(strict=False, directed=True)
 graph.layout(prog="circo")
+
 
 def new_node():
     global num_nodes
@@ -19,8 +22,10 @@ def new_node():
     num_nodes += 1
     return node
 
+
 def remove_node(node):
     graph.remove_node(node)
+
 
 class Node:
     def __init__(self, label, children=None, create_ast=True):
@@ -32,7 +37,28 @@ class Node:
         self.is_var = False
         self.extraVals = []
         self.variables = {}
-        self.type = None
+        self.temp = ""
+        self.var_name = []
+
+        self.break_list = []
+        self.continuelist = []
+        self.true_list = []
+        self.false_list = []
+
+        self.next_list = []
+        self.argument_list = []
+        self.test_list = []
+
+        self.totype = None
+        self.type = []
+        self.parameter_nums = None
+        self.parameters = None
+
+        self.numdef = 0
+        self.quadruples = None
+        self.dim_list = None
+        self.address = None
+        self.array_level = 0
 
         if children is None:
             self.is_terminal = True
@@ -44,6 +70,25 @@ class Node:
 
         if self.create_ast:
             self.make_graph()
+
+    def print_val(self):
+        for child in self.children:
+            child.print_val()
+        self.node.attr["label"] += "\n" + str(self.temp)
+
+    def append_dict(self, val):
+        for key in self.variables.keys():
+            self.variables[key].append(val)
+
+    def insert_edge(self, children):
+        listNode = []
+        for child in children:
+            graph.add_edge(self.node, child.node)
+            listNode.append(child.node)
+        for i in range(0, len(children) - 1):
+            graph.add_edge(children[i].node, children[i + 1].node, style="invis")
+        graph.add_subgraph(listNode, rank="same")
+        self.children += children
 
     def make_graph(self):
         if self.is_terminal:
@@ -72,20 +117,20 @@ class Node:
         remove_node(self.node)
         self.node = None
 
-    def addTypeInDict(self, type):
-        """
-        Add "data_type" to all variables in the dictionary
-        """
-        for key in self.variables.keys():
-            self.variables[key].append(type)
 
-    def print_val(self):
-        for child in self.children:
-            child.print_val()
-        print(self.label)
+datatype_size = {
+    "int": 4,
+    "char": 1,
+    "short": 2,
+    "float": 4,
+    "ptr": 4,
+    "bool": 1,
+    "void": 0,
+    "int unsigned": 4,
+    "unsigned int": 4,
+    "str": 4,
+}
 
-
-sizes = {"int": 4, "char": 1, "short": 2, "float": 4, "ptr": 4, "bool": 1, "void": 0}
 
 class Parser:
 
@@ -97,6 +142,63 @@ class Parser:
         self.symtab = SymbolTable()
         self.ast_root = Node("AST Root")
         self.error = False
+        self.three_address_code = three_address_code()
+        self.symtabrList = []
+
+    def symtab_size_update(self, variables, var_name):
+        multiplier = 1
+        new_list = []
+        for var in variables:
+            new_list = new_list + var.split(" ")
+        variables = new_list
+        if "*" in variables:
+            self.symtab.modify_symbol(var_name, "allocated_size", datatype_size["ptr"])
+        elif "struct" in variables:
+            struct_size = 0
+            found = self.symtab.return_type_tab_entry_su(variables[1], "struct")
+            struct_size = found["allocated_size"]
+            self.symtab.modify_symbol(
+                var_name, "allocated_size", multiplier * struct_size
+            )
+        elif "union" in variables:
+            struct_size = 0
+            found = self.symtab.return_type_tab_entry_su(variables[1], "union")
+            struct_size = found["allocated_size"]
+            self.symtab.modify_symbol(
+                var_name, "allocated_size", multiplier * struct_size
+            )
+        elif "float" in variables:
+            self.symtab.modify_symbol(
+                var_name, "allocated_size", multiplier * datatype_size["float"]
+            )
+        elif "short" in variables:
+            self.symtab.modify_symbol(
+                var_name, "allocated_size", multiplier * datatype_size["short"]
+            )
+        elif "int" in variables:
+            self.symtab.modify_symbol(
+                var_name, "allocated_size", multiplier * datatype_size["int"]
+            )
+        elif "char" in variables:
+            self.symtab.modify_symbol(
+                var_name, "allocated_size", multiplier * datatype_size["char"]
+            )
+        elif "bool" in variables:
+            self.symtab.modify_symbol(
+                var_name, "allocated_size", multiplier * datatype_size["bool"]
+            )
+        else:
+            self.symtab.modify_symbol(
+                var_name, "allocated_size", multiplier * datatype_size["void"]
+            )
+
+    def convertFloatRepToLong(self, val):
+        float_rep = "".join(
+            bin(c).replace("0b", "").rjust(8, "0") for c in struct.pack("!f", val)
+        )
+        long_rep = int(float_rep, 2)
+        self.three_address_code.float_values.append(long_rep)
+        return len(self.three_address_code.float_values) - 1
 
     def build(self):
         self.parser = yacc.yacc(
@@ -110,7 +212,7 @@ class Parser:
         if self.error:
             return
         p[0] = self.ast_root
-        self.symtab.store_results()
+        self.symtab.store_results(self.three_address_code)
 
     def p_error(self, p):
         self.error = True
@@ -152,6 +254,7 @@ class Parser:
         )
 
     # Expressions
+
     def p_BoolConst(self, p):
         """BoolConst : TRUE
         | FALSE
@@ -167,13 +270,70 @@ class Parser:
             return
         p[0] = Node(str(p[1]))
         p[0].type = ["int"]
+        if self.symtab.error:
+            return
+        p[0].temp = self.three_address_code.create_temp_var()
+        self.symtab.insert_symbol(p[0].temp, 0)
+        self.symtab.modify_symbol(p[0].temp, "data_type", p[0].type)
+        self.symtab.modify_symbol(p[0].temp, "identifier_type", "TEMP")
+        self.symtab_size_update(p[0].type, p[0].temp)
+        if self.symtab.is_global(p[0].temp):
+            self.symtab.modify_symbol(p[0].temp, "variable_scope", "Global")
+        else:
+            self.symtab.modify_symbol(p[0].temp, "variable_scope", "Local")
+            found, entry = self.symtab.return_sym_tab_entry(p[0].temp)
+            var_size = found["allocated_size"]
+            if found["variable_scope"] == "Local":
+                if found["offset"] > 0:
+                    self.symtab.modify_symbol(
+                        p[0].temp,
+                        "temp",
+                        f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                    )
+                else:
+                    self.symtab.modify_symbol(
+                        p[0].temp,
+                        "temp",
+                        f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                    )
+            p[0].temp = found["temp"]
+        self.three_address_code.emit("=_int", p[0].temp, f"${p[1]}")
 
     def p_FloatConst(self, p):
         """FloatConst : FLOAT_CONSTANT"""
         if self.error:
             return
         p[0] = Node(str(p[1]))
+        idx = self.convertFloatRepToLong(p[1])
         p[0].type = ["float"]
+        if self.symtab.error:
+            return
+        p[0].temp = self.three_address_code.create_temp_var()
+        self.symtab.insert_symbol(p[0].temp, 0)
+        self.symtab.modify_symbol(p[0].temp, "data_type", p[0].type)
+        self.symtab.modify_symbol(p[0].temp, "identifier_type", "TEMP")
+        self.symtab_size_update(p[0].type, p[0].temp)
+        if self.symtab.is_global(p[0].temp):
+            self.symtab.modify_symbol(p[0].temp, "variable_scope", "Global")
+        else:
+            self.symtab.modify_symbol(p[0].temp, "variable_scope", "Local")
+            found, entry = self.symtab.return_sym_tab_entry(p[0].temp)
+            var_size = found["allocated_size"]
+            if found["variable_scope"] == "Local":
+                if found["offset"] > 0:
+                    self.symtab.modify_symbol(
+                        p[0].temp,
+                        "temp",
+                        f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                    )
+                else:
+                    self.symtab.modify_symbol(
+                        p[0].temp,
+                        "temp",
+                        f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                    )
+            p[0].temp = found["temp"]
+        self.three_address_code.emit("load_float", f".LF{idx}", p[0].temp, "")
 
     def p_CharConst(self, p):
         """CharConst : CHAR_CONSTANT"""
@@ -181,6 +341,49 @@ class Parser:
             return
         p[0] = Node(str(p[1]))
         p[0].type = ["char"]
+        if self.symtab.error:
+            return
+        p[0].temp = self.three_address_code.create_temp_var()
+        self.symtab.insert_symbol(p[0].temp, 0)
+        self.symtab.modify_symbol(p[0].temp, "data_type", p[0].type)
+        self.symtab.modify_symbol(p[0].temp, "identifier_type", "TEMP")
+        self.symtab_size_update(p[0].type, p[0].temp)
+        if self.symtab.is_global(p[0].temp):
+            self.symtab.modify_symbol(p[0].temp, "variable_scope", "Global")
+        else:
+            self.symtab.modify_symbol(p[0].temp, "variable_scope", "Local")
+            found, entry = self.symtab.return_sym_tab_entry(p[0].temp)
+            var_size = found["allocated_size"]
+            if found["variable_scope"] == "Local":
+                if found["offset"] > 0:
+                    self.symtab.modify_symbol(
+                        p[0].temp,
+                        "temp",
+                        f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                    )
+                else:
+                    self.symtab.modify_symbol(
+                        p[0].temp,
+                        "temp",
+                        f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                    )
+            p[0].temp = found["temp"]
+        self.three_address_code.emit("=_char", p[0].temp, f"${p[1]}")
+
+    def p_StringConst(self, p):
+        """StringConst : STRING_CONSTANT"""
+        if self.error:
+            return
+        p[0] = Node(str(p[1]))
+        self.three_address_code.string_list.append(str(p[1]))
+        p[0].type = ["str"]
+        if self.symtab.error:
+            return
+        for i in range(0, len(self.three_address_code.string_list)):
+            if self.three_address_code.string_list[i] == p[1]:
+                idx = i
+                break
+        p[0].temp = f"$.LC{idx}"
 
     def p_primary_expression(self, p):
         """
@@ -189,7 +392,7 @@ class Parser:
                         | FloatConst
                         | CharConst
                         | BoolConst
-                        | STRING_CONSTANT
+                        | StringConst
                         | '(' expression ')'
         """
         if self.error:
@@ -200,43 +403,166 @@ class Parser:
             if found:
                 if "data_type" not in entry.keys():
                     self.symtab.error = True
-                    print(bcolors.FAIL+
-                        "Use of self referencing variables  isn't allowed at line No "
-                        + str(p.lineno(1))+bcolors.ENDC
+                    print(
+                        bcolors.FAIL
+                        + "Use of self referencing variables  isn't allowed at line No "
+                        + str(p.lineno(1))
+                        + bcolors.ENDC
                     )
                     return
                 if entry["identifier_type"] == "function":
                     p[0] = Node(str(p[1]["lexeme"]))
-                    p[0].type = []
-                    p[0].type.append("func")
-                    p[0].ret_type = entry["data_type"]
+                    p[0].type.append("function")
+                    p[0].ret_type = []
+                    type_list = entry["data_type"]
+                    isarr = 0
+
+                    for i in range(len(entry["data_type"])):
+                        if (
+                            entry["data_type"][i][0] == "["
+                            and entry["data_type"][i][-1] == "]"
+                        ):
+                            isarr += 1
+                            p[0].array_level += 1
+
+                    if "unsigned" in type_list or "signed" in type_list:
+                        if (
+                            "bool" not in type_list
+                            and "char" not in type_list
+                            and "short" not in type_list
+                        ):
+                            type_list.append("int")
+
+                    if "int" in type_list:
+                        p[0].ret_type.append("int")
+                        for single_type in type_list:
+                            if single_type != "int":
+                                p[0].ret_type.append(single_type)
+
+                    elif "short" in type_list:
+                        p[0].ret_type.append("short")
+                        for single_type in type_list:
+                            if single_type != "short":
+                                p[0].ret_type.append(single_type)
+
+                    elif "char" in type_list:
+                        p[0].ret_type.append("char")
+                        for single_type in type_list:
+                            if single_type != "char":
+                                p[0].ret_type.append(single_type)
+
+                    elif "bool" in type_list:
+                        p[0].ret_type.append("bool")
+                        for single_type in type_list:
+                            if single_type != "bool":
+                                p[0].ret_type.append(single_type)
+
+                    elif "str" in type_list:
+                        p[0].ret_type.append("str")
+                        for single_type in type_list:
+                            if single_type != "str":
+                                p[0].ret_type.append(single_type)
+
+                    elif "float" in type_list:
+                        p[0].ret_type.append("float")
+                        for single_type in type_list:
+                            if single_type != "float":
+                                p[0].ret_type.append(single_type)
+
+                    if isarr > 0:
+                        temp_type = []
+                        temp_type.append(p[0].ret_type[0])
+                        for i in range(isarr):
+                            temp_type[0] += " *"
+
+                        for i in range(len(p[0].ret_type)):
+                            if i > isarr:
+                                temp_type.append(p[0].ret_type[i])
+
+                        p[0].ret_type = temp_type
+                        p[0].ret_type.append("arr")
+                        for i in range(len(type_list)):
+                            if (
+                                type_list[len(type_list) - i - 1][0] == "["
+                                and type_list[len(type_list) - i - 1][-1] == "]"
+                            ):
+                                p[0].ret_type.append(type_list[len(type_list) - i - 1])
+
+                    if "struct" in type_list:
+                        p[0].ret_type.append("struct")
+                        for single_type in type_list:
+                            if single_type != "struct":
+                                p[0].ret_type.append(single_type)
+
+                    if "union" in type_list:
+                        p[0].ret_type.append("union")
+                        for single_type in type_list:
+                            if single_type != "union":
+                                p[0].ret_type.append(single_type)
+
+                    if "void" in type_list:
+                        p[0].ret_type.append("void")
+                        for single_type in type_list:
+                            if single_type != "void":
+                                p[0].ret_type.append(single_type)
+
+                    if "*" in type_list:
+                        temp_type = []
+                        temp_type.append(p[0].ret_type[0])
+                        for i in range(1, len(p[0].ret_type)):
+                            if p[0].ret_type[i] == "*":
+                                temp_type[0] += " *"
+                            else:
+                                temp_type.append(p[0].ret_type[i])
+                        p[0].ret_type = temp_type
+
                     p[0].parameter_nums = entry["num_parameters"]
                     p[0].parameters = []
 
-                    for var in entry["scope"][0]:
-                        if var == "struct_or_union":
-                            p[0].structorunion = entry["scope"][0][var]
-                            continue
-                        if var == "scope":
-                            continue
+                    if "scope" in entry.keys():
+                        for var in entry["scope"][0]:
+                            if var == "struct_or_union":
+                                p[0].structorunion = entry["scope"][0][var]
+                                continue
+                            if var == "scope" or var == "scope_num":
+                                continue
+                            if entry["scope"][0][var]["identifier_type"] == "parameter":
+                                p[0].parameters.append(entry["scope"][0][var])
 
-                        if entry["scope"][0][var]["identifier_type"] == "parameter":
-                            p[0].parameters.append(entry["scope"][0][var])
+                    if self.symtab.error:
+                        return
+                    p[0].true_list.append(self.three_address_code.next_statement)
+                    p[0].false_list.append(self.three_address_code.next_statement + 1)
                     return
 
                 isArr = 0
 
                 for i in range(len(entry["data_type"])):
-                    if entry["data_type"][i][0] == "[" and entry["data_type"][i][-1] == "]":
+                    if (
+                        entry["data_type"][i][0] == "["
+                        and entry["data_type"][i][-1] == "]"
+                    ):
                         isArr += 1
 
                 p[0] = Node(str(p[1]["lexeme"]))
                 type_list = entry["data_type"]
 
-                if entry["identifier_type"] == "variable" or entry["identifier_type"] == "parameter":
+                if type_list is None or set(type_list) == {"*"}:
+                    type_list = []
+
+                if (
+                    entry["identifier_type"] == "variable"
+                    or entry["identifier_type"] == "parameter"
+                ):
                     p[0].is_var = 1
 
-                p[0].type = []
+                if "unsigned" in type_list or "signed" in type_list:
+                    if (
+                        "bool" not in type_list
+                        and "char" not in type_list
+                        and "short" not in type_list
+                    ):
+                        type_list.append("int")
 
                 if "int" in type_list:
                     p[0].type.append("int")
@@ -274,18 +600,6 @@ class Parser:
                         if single_type != "float":
                             p[0].type.append(single_type)
 
-                if isArr > 0:
-                    temp_type = []
-                    temp_type.append(p[0].type[0] + " ")
-                    for i in range(isArr):
-                        temp_type[0] += "*"
-
-                    for i in range(len(p[0].type)):
-                        if i > isArr:
-                            temp_type.append(p[0].type[i])
-                    p[0].type = temp_type
-                    p[0].type.append("arr")
-
                 if "struct" in type_list:
                     p[0].type.append("struct")
                     for single_type in type_list:
@@ -298,39 +612,88 @@ class Parser:
                         if single_type != "union":
                             p[0].type.append(single_type)
 
+                if isArr > 0:
+                    temp_type = []
+                    temp_type.append(p[0].type[0])
+                    for i in range(isArr):
+                        temp_type[0] += " *"
+
+                    for i in range(len(p[0].type)):
+                        if i > isArr:
+                            temp_type.append(p[0].type[i])
+                    p[0].type = temp_type
+                    p[0].type.append("arr")
+
+                    for i in range(len(type_list)):
+                        if (
+                            type_list[len(type_list) - i - 1][0] == "["
+                            and type_list[len(type_list) - i - 1][-1] == "]"
+                        ):
+                            p[0].type.append(type_list[len(type_list) - i - 1])
+
+                if "void" in type_list:
+                    p[0].type.append("void")
+                    for single_type in type_list:
+                        if single_type != "void":
+                            p[0].type.append(single_type)
+
                 if "*" in type_list:
                     temp_type = []
-                    temp_type.append(p[0].type[0] + " *")
-                    for i in range(len(p[0].type)):
-                        if i >= 2:
-                            if p[0].type[i] == "*":
-                                temp_type[0] += "*"
-                            else:
-                                temp_type.append(p[0].type[i])
+                    temp_type.append(p[0].type[0])
+                    for i in range(1, len(p[0].type)):
+                        if p[0].type[i] == "*":
+                            temp_type[0] += " *"
+                        else:
+                            temp_type.append(p[0].type[i])
                     p[0].type = temp_type
 
-                if "struct" in p[0].type or "union" in p[0].type:
+                if "struct" in p[0].type[0] or "union" in p[0].type[0]:
                     p[0].vars = entry["vars"]
 
-                elif "struct *" in p[0].type or "union *" in p[0].type:
-                    p[0].vars = entry["vars"]
+            else:
+                p[0] = Node("error")
 
-                elif p[0].type and (
-                    "struct" in p[0].type[0] or "union" in p[0].type[0]
-                ):
-                    self.symtab.error = True
-                    print(bcolors.FAIL+
-                        "Multilevel pointer for structures/unions not allowed at line"
-                        + str(p.lineno(1))+bcolors.ENDC
-                    )
+            if self.symtab.error:
+                return
+
+            p[0].var_name.append(p[1]["lexeme"])
+            p[0].temp = self.three_address_code.find_symbol_in_symtab(
+                self.symtab, p[0].label
+            )
+            p[0].true_list.append(self.three_address_code.next_statement)
+            p[0].false_list.append(self.three_address_code.next_statement + 1)
+            self.three_address_code.emit("ifnz goto", "", p[0].temp, "")
+            self.three_address_code.emit("goto", "", "", "")
 
         elif str(p.slice[1])[-5:] == "Const":
             p[0] = p[1]
+            if self.symtab.error:
+                return
+            p[0].true_list.append(self.three_address_code.next_statement)
+            p[0].false_list.append(self.three_address_code.next_statement + 1)
+            self.three_address_code.emit("ifnz goto", "", p[0].temp, "")
+            self.three_address_code.emit("goto", "", "", "")
         elif p.slice[1].type == "STRING_CONSTANT":
             p[0] = Node(str(p[1]))
             p[0].type = ["str"]
+
         elif len(p) == 4:
             p[0] = p[2]
+
+    def p_identifier(self, p):
+        """identifier : IDENTIFIER"""
+        if self.error:
+            return
+        p[0] = Node(str(p[1]["lexeme"]))
+        p[0].variables[p[0].label] = []
+        p[0].is_var = 1
+        self.symtab.insert_symbol(p[1]["lexeme"], p[1]["additional"]["line"])
+        self.symtab.modify_symbol(p[1]["lexeme"], "identifier_type", "variable")
+
+        if self.symtab.error:
+            return
+
+        self.symtab.modify_symbol(p[1]["lexeme"], "temp", p[1]["lexeme"])
 
     def p_postfix_expression(self, p):
         """
@@ -347,60 +710,153 @@ class Parser:
             return
         if len(p) == 2:
             p[0] = p[1]
+            if p[1] == None or p[1].type == None:
+                self.symtab.error = 1
+                return
+            for i in range(len(p[1].type) - 1, 0, -1):
+                if p[1].type[i][0] != "[":
+                    break
+                else:
+                    if p[0].dim_list is None:
+                        p[0].dim_list = []
+                    if len(p[0].dim_list) == 0 and len(p[1].type[i][1:-1]) == 0:
+                        p[0].dim_list.append(0)
+                    else:
+                        try:
+                            p[0].dim_list.append(int(p[1].type[i][1:-1]))
+                        except:
+                            p[0].dim_list.append(p[1].type[i][1:-1])
+            if p[0].dim_list is not None:
+                p[0].dim_list.reverse()
+                p[0].dim_list.append("is_first_access")
+                var = p[0].temp.split("(")[0]
+                if var == "" or var is None:
+                    return
+                if var[0] != "-":
+                    var = "+" + var
+                p[0].address = f"%ebp{var}"
+                if var[0] == "-":
+                    p[0].temp = p[0].address
 
         elif len(p) == 3:
-            if p[1].type is None:
+            if p[1] == None or p[1].type == None or p[1].type == []:
                 self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Unable to increment/decrement the expression at Line No.: "
-                    + str(p.lineno(2))+bcolors.ENDC
+                print(
+                    bcolors.FAIL
+                    + "Unable to increment/decrement the expression at Line No.: "
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
                 )
-            elif p[1].type[0] not in ["char", "short", "int"]:
+            elif (
+                p[1].type[0] not in ["char", "short", "int"] and p[1].type[0][-1] != "*"
+            ):
                 self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Unable to increment/decrement "
+                print(
+                    bcolors.FAIL
+                    + "Unable to increment/decrement "
                     + str(p[1].type[0])
                     + " type expression at Line No.: "
-                    + str(p.lineno(2))+bcolors.ENDC
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
                 )
-            elif not p[1].is_terminal:
+            elif not p[1].is_terminal == False and p[1].is_var == False:
                 self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Unable to increment/decrement the expression at Line No.: "
-                    + str(p.lineno(2))+bcolors.ENDC
+                print(
+                    bcolors.FAIL
+                    + "Unable to increment/decrement the expression at Line No.: "
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
                 )
-            elif not p[1].is_var:
+            elif p[1].is_var == 0 and p[1].type[0][-1] != "*":
                 self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Unable to increment/decrement the expression at Line No.: "
-                    + str(p.lineno(2))+bcolors.ENDC
+                print(
+                    bcolors.FAIL
+                    + "Unable to increment/decrement the constant at Line No.: "
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
+                )
+            elif p[1].type[0][-1] == "*" and "arr" in p[1].type:
+                self.symtab.error = True
+                print(
+                    bcolors.FAIL
+                    + "Unable to increment/decrement on array type at Line No.: "
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
                 )
             else:
                 p[0] = Node("Postfix" + str(p[2]), children=[p[1]])
-                if p[1].type[0] in ["char", "short"]:
-                    p[0].type = ["int"]
-                    p[0].type += p[1].type[1:]
-                    p[1].totype = p[0].type
+                p[0].type = p[1].type
+
+                if self.symtab.error:
+                    return
+
+                p[0].var_name = p[1].var_name
+                p[0].temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p[0].temp, 0)
+                self.symtab.modify_symbol(p[0].temp, "data_type", p[0].type)
+                self.symtab.modify_symbol(p[0].temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[0].type, p[0].temp)
+                if self.symtab.is_global(p[0].temp):
+                    self.symtab.modify_symbol(p[0].temp, "variable_scope", "Global")
                 else:
-                    p[0].type = p[1].type
+                    self.symtab.modify_symbol(p[0].temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p[0].temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p[0].temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p[0].temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p[0].temp = found["temp"]
+                self.three_address_code.emit("=_int", p[0].temp, p[1].temp, "")
+                if str(p[2]) == "++":
+                    self.three_address_code.emit("+_int", p[1].temp, p[1].temp, f"$1")
+                else:
+                    self.three_address_code.emit("-_int", p[1].temp, p[1].temp, f"$1")
+                p[0].true_list.append(self.three_address_code.next_statement)
+                p[0].false_list.append(self.three_address_code.next_statement + 1)
+                self.three_address_code.emit("ifnz goto", "", p[0].temp, "")
+                self.three_address_code.emit("goto", "", "", "")
 
         elif len(p) == 4:
             if p[2] == ".":
                 p3val = p[3]["lexeme"]
                 p[3] = Node(str(p3val))
                 p[0] = Node(".", children=[p[1], p[3]])
-                if "struct" not in p[1].type and "union" not in p[1].type:
+                if p[1] == None or p[1].type == None or p[1].type == []:
                     self.symtab.error = True
-                    print(bcolors.FAIL+
-                        "Requested an invalid member of object that isn't a structure/union at Line No.: "
-                        + str(p.lineno(2))+bcolors.ENDC
+                    print(
+                        bcolors.FAIL
+                        + "Requested an invalid member of object that isn't a structure/union at Line No.: "
+                        + str(p.lineno(2))
+                        + bcolors.ENDC
                     )
+                if "struct" not in p[1].type and "union" not in p[1].type:
+                    self.symtab.error = 1
+                    print(
+                        bcolors.FAIL
+                        + f"Invalid request for member of object that is not a structure/union at line {p.lineno(2)}"
+                    )
+                    return
+                if not hasattr(p[1], "vars"):
+                    self.symtab.error = 1
+                    return
 
                 elif p3val not in p[1].vars:
                     self.symtab.error = True
-                    print(bcolors.FAIL+
-                        "Requested an invalid member of object that doesn't belong to the structure/union at Line No.: "
-                        + str(p.lineno(2))+bcolors.ENDC
+                    print(
+                        bcolors.FAIL
+                        + "Requested an invalid member of object that doesn't belong to the structure/union at Line No.: "
+                        + str(p.lineno(2))
+                        + bcolors.ENDC
                     )
 
                 else:
@@ -411,7 +867,8 @@ class Parser:
                             narr += 1
 
                     type_list = old_type_list
-
+                    if type_list is None or set(type_list) == {"*"}:
+                        type_list = []
                     p[0].type = []
 
                     if "int" in type_list:
@@ -450,18 +907,6 @@ class Parser:
                             if single_type != "float":
                                 p[0].type.append(single_type)
 
-                    if narr > 0:
-                        temp_type = []
-                        temp_type.append(p[0].type[0] + " ")
-                        for i in range(narr):
-                            temp_type[0] += "*"
-
-                        for i in range(len(p[0].type)):
-                            if i > narr:
-                                temp_type.append(p[0].type[i])
-                        p[0].type = temp_type
-                        p[0].type.append("arr")
-
                     if "struct" in type_list:
                         p[0].type.append("struct")
                         for single_type in type_list:
@@ -474,76 +919,251 @@ class Parser:
                             if single_type != "union":
                                 p[0].type.append(single_type)
 
+                    if narr > 0:
+                        temp_type = []
+                        temp_type.append(p[0].type[0])
+                        for i in range(narr):
+                            temp_type[0] += " *"
+
+                        for i in range(len(p[0].type)):
+                            if i > narr:
+                                temp_type.append(p[0].type[i])
+                        p[0].type = temp_type
+                        p[0].type.append("arr")
+                        for i in range(len(type_list)):
+                            if (
+                                type_list[len(type_list) - i - 1][0] == "["
+                                and type_list[len(type_list) - i - 1][-1] == "]"
+                            ):
+                                p[0].type.append(type_list[len(type_list) - i - 1])
+
+                    if "void" in type_list:
+                        p[0].type.append("void")
+                        for single_type in type_list:
+                            if single_type != "void":
+                                p[0].type.append(single_type)
+
                     if "*" in type_list:
                         temp_type = []
-                        temp_type.append(p[0].type[0] + " *")
-                        for i in range(len(p[0].type)):
-                            if i >= 2:
-                                if p[0].type[i] == "*":
-                                    temp_type[0] += "*"
-                                else:
-                                    temp_type.append(p[0].type[i])
+                        temp_type.append(p[0].type[0])
+                        for i in range(1, len(p[0].type)):
+                            if p[0].type[i] == "*":
+                                temp_type[0] += " *"
+                            else:
+                                temp_type.append(p[0].type[i])
                         p[0].type = temp_type
 
-                    if (
-                        "struct" in p[0].type
-                        or "struct *" in p[0].type
-                        or "union" in p[0].type
-                        or "union *" in p[0].type
-                    ):
-                        self.symtab.error = True
-                        print(bcolors.FAIL+
-                            "Use of nested structures or unions aren't allowed at Line No.: "
-                            + str(p.lineno(2))+bcolors.ENDC
+                    if "struct" in p[0].type[0] or "union" in p[0].type[0]:
+                        strtype = ""
+                        if "struct" in p[0].type[0]:
+                            strtype = "struct"
+                        elif "union" in p[0].type[0]:
+                            strtype = "union"
+                        typet = self.symtab.return_type_tab_entry_su(
+                            p[0].type[1], strtype, p.lineno(3)
                         )
-
-                    elif p[0].type and (
-                        "struct" in p[0].type[0] or "union" in p[0].type[0]
-                    ):
-                        self.symtab.error = True
-                        print(bcolors.FAIL+
-                            "Use of multilevel pointer for structures isn't allowed at Line No.: "
-                            + str(p.lineno(1))+bcolors.ENDC
-                        )
-
+                        p[0].vars = typet["vars"]
                     if "struct" not in p[0].type and "union" not in p[0].type:
-                        p[0].is_var = True
+                        p[0].is_var = 1
+                if self.symtab.error:
+                    return
+                p[0].var_name = p[1].var_name + [p3val]
+                try:
+                    found, entry = self.symtab.return_sym_tab_entry(
+                        p[0].var_name[0], p.lineno(1)
+                    )
+                except:
+                    self.symtab.error = 1
+                    print(
+                        bcolors.FAIL
+                        + "Invalid usage of '.' operator at line"
+                        + str(p.lineno(2))
+                        + bcolors.ENDC
+                    )
+                    return
+                if found is not None:
+                    if p[0].var_name[1] in found["vars"].keys():
+                        ptr_flag = 0
+                        p[0].temp = p[1].temp
+                        if p[0].temp[0] == "(":
+                            ptr_flag = 1
+                            p0_offset = 0
+                        else:
+                            p0_offset = int(p[0].temp.split("(")[0])
+                        if len(p[0].var_name) == 2:
+                            tmp_offset = 0
+                            for item in found["vars"]:
+                                if item == p[0].var_name[1]:
+                                    break
+                                tmp_offset += found["vars"][item]["allocated_size"]
+                            p0_offset += tmp_offset
+                            if ptr_flag == 1:
+                                self.three_address_code.emit(
+                                    "+_int",
+                                    p[0].temp[1:-1],
+                                    p[0].temp[1:-1],
+                                    f"${p0_offset}",
+                                )
+                            else:
+                                p[0].temp = f"{p0_offset}(%ebp)"
+                        else:
+                            type_to_check = found["vars"][p[0].var_name[1]]["data_type"]
+                            idx = 2
+                            while "struct" in type_to_check:
+                                tmp_type = copy.deepcopy(type_to_check)
+                                tmp_type.remove("struct")
+                                if "*" in tmp_type:
+                                    tmp_type.remove("*")
+                                found2 = self.symtab.return_type_tab_entry_su(
+                                    tmp_type[0], "struct"
+                                )
+                                if idx == len(p[0].var_name) - 1:
+                                    tmp_offset = 0
+                                    for item in found2["vars"]:
+                                        if item == p[0].var_name[idx]:
+                                            break
+                                        tmp_offset += found2["vars"][item][
+                                            "allocated_size"
+                                        ]
+                                    p0_offset += tmp_offset
+                                    if ptr_flag == 1:
+                                        self.three_address_code.emit(
+                                            "+_int",
+                                            p[0].temp[1:-1],
+                                            p[0].temp[1:-1],
+                                            f"${p0_offset}",
+                                        )
+                                    else:
+                                        p[0].temp = f"{p0_offset}(%ebp)"
+                                    break
+                                type_to_check = found2["vars"][p[0].var_name[idx]][
+                                    "data_type"
+                                ]
+                                idx += 1
+
+                p[0].true_list.append(self.three_address_code.next_statement)
+                p[0].false_list.append(self.three_address_code.next_statement + 1)
+                self.three_address_code.emit("ifnz goto", "", p[0].temp, "")
+                self.three_address_code.emit("goto", "", "", "")
 
             elif p[2] == "(":
                 p[0] = Node("FuncCall", [p[1]])
-                if "func" not in p[1].type:
-                    self.symtab.error = True
-                    print(bcolors.FAIL+
-                        "Unable to call non-function at Line No.: " + str(p.lineno(2))+bcolors.ENDC
+
+                if p[1] is None:
+                    self.symtab.error = 1
+                    print(
+                        bcolors.FAIL
+                        + "Unable to call non-function at line "
+                        + str(p.lineno(2))
+                        + bcolors.ENDC
                     )
+                    return
+
+                if p[1].type is None:
+                    p[1].type = []
+                if "function" not in p[1].type:
+                    self.symtab.error = True
+                    print(
+                        bcolors.FAIL
+                        + "Unable to call non-function at Line No.: "
+                        + str(p.lineno(2))
+                        + bcolors.ENDC
+                    )
+                    return
 
                 elif p[1].parameter_nums != 0:
                     self.symtab.error = True
-                    print(bcolors.FAIL+
-                        str(p[1].parameter_nums)
+                    print(
+                        bcolors.FAIL
+                        + str(p[1].parameter_nums)
                         + " parameters are required for calling the function at Line No.:"
-                        + str(p.lineno(2))+bcolors.ENDC
+                        + str(p.lineno(2))
+                        + bcolors.ENDC
                     )
-
+                    return
                 else:
                     p[0].type = p[1].ret_type
+
+                p[0].var_name = p[1].var_name
+                if self.symtab.error:
+                    return
+                p[0].temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p[0].temp, 0)
+                self.symtab.modify_symbol(p[0].temp, "data_type", p[0].type)
+                self.symtab.modify_symbol(p[0].temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[0].type, p[0].temp)
+                if self.symtab.is_global(p[0].temp):
+                    self.symtab.modify_symbol(p[0].temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p[0].temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p[0].temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p[0].temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p[0].temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p[0].temp = found["temp"]
+                found, entry = self.symtab.return_sym_tab_entry(p[1].label)
+                if ("struct" in found["data_type"]) and ("*" not in found["data_type"]):
+                    self.three_address_code.emit(
+                        "callq_struct", p[0].temp, p[1].label, "0"
+                    )
+                elif found["data_type"] == ["void"]:
+                    self.three_address_code.emit("callq", "", p[1].label, "0")
+                elif ("char" in found["data_type"]) and ("*" not in found["data_type"]):
+                    self.three_address_code.emit(
+                        "callq_char", p[0].temp, p[1].label, "0"
+                    )
+                else:
+                    self.three_address_code.emit("callq", p[0].temp, p[1].label, "0")
+                    p[0].true_list.append(self.three_address_code.next_statement)
+                    p[0].false_list.append(self.three_address_code.next_statement + 1)
+                    self.three_address_code.emit("ifnz goto", "", p[0].temp, "")
+                    self.three_address_code.emit("goto", "", "", "")
 
             elif p[2] == "->":
                 p3val = p[3]["lexeme"]
                 p[3] = Node(str(p3val))
-                p[0] = Node(".", children=[p[1], p[3]])
+                p[0] = Node("->", children=[p[1], p[3]])
+
+                if p[1] == None or p[1].type == None or p[1].type == []:
+                    self.symtab.error = 1
+                    print(
+                        bcolors.FAIL
+                        + "Invalid request for member of object that is not a structure/union at line "
+                        + str(p.lineno(2))
+                        + bcolors.ENDC
+                    )
+                    return
+
+                if p[1].type is None:
+                    p[1].type = []
+
                 if "struct *" not in p[1].type and "union *" not in p[1].type:
                     self.symtab.error = True
-                    print(bcolors.FAIL+
-                        "Requested an invalid member of object which isn't a structure/union at Line No.: "
-                        + str(p.lineno(2))+bcolors.ENDC
+                    print(
+                        bcolors.FAIL
+                        + "Requested an invalid member of object which isn't a structure/union at Line No.: "
+                        + str(p.lineno(2))
+                        + bcolors.ENDC
                     )
 
                 elif p3val not in p[1].vars:
                     self.symtab.error = True
-                    print(bcolors.FAIL+
-                        "Requested an invalid member of object which doesn't belong to the structure/union at Line No.: "
-                        + str(p.lineno(2))+bcolors.ENDC
+                    print(
+                        bcolors.FAIL
+                        + "Requested an invalid member of object which doesn't belong to the structure/union at Line No.: "
+                        + str(p.lineno(2))
+                        + bcolors.ENDC
                     )
 
                 else:
@@ -554,6 +1174,9 @@ class Parser:
                             narr += 1
 
                     type_list = old_type_list
+
+                    if type_list is None or set(type_list) == {"*"}:
+                        type_list = []
 
                     p[0].type = []
 
@@ -593,18 +1216,6 @@ class Parser:
                             if single_type != "float":
                                 p[0].type.append(single_type)
 
-                    if narr > 0:
-                        temp_type = []
-                        temp_type.append(p[0].type[0] + " ")
-                        for i in range(narr):
-                            temp_type[0] += "*"
-
-                        for i in range(len(p[0].type)):
-                            if i > narr:
-                                temp_type.append(p[0].type[i])
-                        p[0].type = temp_type
-                        p[0].type.append("arr")
-
                     if "struct" in type_list:
                         p[0].type.append("struct")
                         for single_type in type_list:
@@ -617,185 +1228,851 @@ class Parser:
                             if single_type != "union":
                                 p[0].type.append(single_type)
 
+                    if narr > 0:
+                        temp_type = []
+                        temp_type.append(p[0].type[0])
+                        for i in range(narr):
+                            temp_type[0] += " *"
+
+                        for i in range(len(p[0].type)):
+                            if i > narr:
+                                temp_type.append(p[0].type[i])
+                        p[0].type = temp_type
+                        p[0].type.append("arr")
+                        for i in range(len(type_list)):
+                            if (
+                                type_list[len(type_list) - i - 1][0] == "["
+                                and type_list[len(type_list) - i - 1][-1] == "]"
+                            ):
+                                p[0].type.append(type_list[len(type_list) - i - 1])
+
+                    if "void" in type_list:
+                        p[0].type.append("void")
+                        for single_type in type_list:
+                            if single_type != "void":
+                                p[0].type.append(single_type)
+
                     if "*" in type_list:
                         temp_type = []
-                        temp_type.append(p[0].type[0] + " *")
-                        for i in range(len(p[0].type)):
-                            if i >= 2:
-                                if p[0].type[i] == "*":
-                                    temp_type[0] += "*"
-                                else:
-                                    temp_type.append(p[0].type[i])
+                        temp_type.append(p[0].type[0])
+                        for i in range(1, len(p[0].type)):
+                            if p[0].type[i] == "*":
+                                temp_type[0] += " *"
+                            else:
+                                temp_type.append(p[0].type[i])
                         p[0].type = temp_type
 
-                    if (
-                        "struct" in p[0].type
-                        or "struct *" in p[0].type
-                        or "union" in p[0].type
-                        or "union *" in p[0].type
-                    ):
-                        self.symtab.error = True
-                        print(bcolors.FAIL+
-                            "Use of nested structures/unions isn't allowed at Line No.: "
-                            + str(p.lineno(2))+bcolors.ENDC
-                        )
+                    if "struct" in p[0].type[0] or "union" in p[0].type[0]:
 
-                    elif p[0].type and (
-                        "struct" in p[0].type[0] or "union" in p[0].type[0]
-                    ):
-                        self.symtab.error = True
-                        print(bcolors.FAIL+
-                            "Use of multilevel pointers for structures isn't allowed at Line No.: "
-                            + str(p.lineno(1))+bcolors.ENDC
+                        strtype = ""
+                        if "struct" in p[0].type[0]:
+                            strtype = "struct"
+                        elif "union" in p[0].type[0]:
+                            strtype = "union"
+                        typet = self.symtab.return_type_tab_entry_su(
+                            p[0].type[1], strtype, p.lineno(3)
                         )
+                        p[0].vars = typet["vars"]
 
                     if "struct" not in p[0].type and "union" not in p[0].type:
                         p[0].is_var = True
 
+                if self.symtab.error:
+                    return
+
+                p[0].var_name = p[1].var_name + [p3val]
+                p[0].temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p[0].temp, 0)
+                self.symtab.modify_symbol(p[0].temp, "data_type", ["int"])
+                self.symtab.modify_symbol(p[0].temp, "identifier_type", "TEMP")
+                self.symtab_size_update(["int"], p[0].temp)
+                if self.symtab.is_global(p[0].temp):
+                    self.symtab.modify_symbol(p[0].temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p[0].temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p[0].temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p[0].temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p[0].temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p[0].temp = found["temp"]
+
+                try:
+                    found, entry = self.symtab.return_sym_tab_entry(
+                        p[0].var_name[0], p.lineno(1)
+                    )
+                except:
+                    self.symtab.error = 1
+                    print(
+                        bcolors.FAIL
+                        + "Invalid usage of '->' operator at line "
+                        + str(p.lineno(2))
+                        + bcolors.ENDC
+                    )
+                    return
+                if found is not False:
+                    if p[0].var_name[1] in found["vars"].keys():
+                        p0_offset = 0
+                        if len(p[0].var_name) == 2:
+                            tmp_offset = 0
+                            for item in found["vars"]:
+                                if item == p[0].var_name[1]:
+                                    break
+                                tmp_offset += found["vars"][item]["allocated_size"]
+                            p0_offset += tmp_offset
+                            self.three_address_code.emit(
+                                "+_int", p[0].temp, p[1].temp, f"${p0_offset}"
+                            )
+                        else:
+                            type_to_check = found["vars"][p[0].var_name[1]]["data_type"]
+                            idx = 2
+                            while "struct" in type_to_check:
+                                tmp_type = copy.deepcopy(type_to_check)
+                                tmp_type.remove("struct")
+                                if "*" in tmp_type:
+                                    tmp_type.remove("*")
+                                found2 = self.symtab.return_type_tab_entry_su(
+                                    tmp_type[0], "struct"
+                                )
+                                if idx == len(p[0].var_name) - 1:
+                                    tmp_offset = 0
+                                    for item in found2["vars"]:
+                                        if item == p[0].var_name[idx]:
+                                            break
+                                        tmp_offset += found2["vars"][item][
+                                            "allocated_size"
+                                        ]
+                                    p0_offset += tmp_offset
+                                    self.three_address_code.emit(
+                                        "+_int", p[0].temp, p[1].temp, f"${p0_offset}"
+                                    )
+                                    break
+                                type_to_check = found2["vars"][p[0].var_name[idx]][
+                                    "data_type"
+                                ]
+                                idx += 1
+
+                p[0].temp = f"({p[0].temp})"
+                p[0].true_list.append(self.three_address_code.next_statement)
+                p[0].false_list.append(self.three_address_code.next_statement + 1)
+                self.three_address_code.emit("ifnz goto", "", p[0].temp, "")
+                self.three_address_code.emit("goto", "", "", "")
+
         elif len(p) == 5:
             if p[2] == "(":
                 p[0] = Node("FuncCall", [p[1], p[3]])
-
-                if p[1] == None or "func" not in p[1].type:
-                    self.symtab.error = True
-                    print(bcolors.FAIL+
-                        "Unable to call non-function at Line No.: " + str(p.lineno(2))+bcolors.ENDC
+                if (
+                    p[1] is None
+                    or p[1].type is None
+                    or p[1].parameter_nums is None
+                    or p[3] is None
+                    or p[3].parameter_nums is None
+                    or p[1].type == []
+                    or p[1].parameters is None
+                ):
+                    self.symtab.error = 1
+                    print(
+                        bcolors.FAIL
+                        + "Cannot perform function call at line "
+                        + str(p.lineno(2))
+                        + bcolors.ENDC
                     )
+                    return
+
+                elif "function" not in p[1].type:
+                    self.symtab.error = 1
+                    print(
+                        bcolors.FAIL
+                        + "Cannot call non-function at line "
+                        + str(p.lineno(2))
+                        + bcolors.ENDC
+                    )
+                    return
 
                 elif p[3].parameter_nums != p[1].parameter_nums:
-                    self.symtab.error = True
-                    print(bcolors.FAIL+
-                        "Wrong no. of parameters (required: "
-                        + str(p[1].parameter_nums)
-                        + " but provided: "
+                    self.symtab.error = 1
+                    print(
+                        bcolors.FAIL
+                        + "Incorrect number of parameters (given: "
                         + str(p[3].parameter_nums)
-                        + " ) at Line No.: "
+                        + ", required: "
+                        + str(p[1].parameter_nums)
+                        + " at line "
                         + str(p.lineno(2))
-                        +bcolors.ENDC
+                        + bcolors.ENDC
                     )
+                    return
                 else:
                     ctr = -1
-                    for i in p[1].parameters:
-
+                    for param in p[1].parameters:
                         ctr += 1
+                        entry = param
+                        isarr = 0
+                        for i in range(len(entry["data_type"])):
+                            if (
+                                entry["data_type"][i][0] == "["
+                                and entry["data_type"][i][-1] == "]"
+                            ):
+                                isarr += 1
 
-                        if p[3].parameters == None or p[3].parameters[0] == None:
-                            self.symtab.error = True
-                            print(bcolors.FAIL+
-                                "One or more invalid arguments provided to the call function at Line No.: "
-                                + str(p.lineno(2))+bcolors.ENDC
+                        type_list = entry["data_type"]
+                        if "unsigned" in type_list or "signed" in type_list:
+                            if (
+                                "bool" not in type_list
+                                and "char" not in type_list
+                                and "short" not in type_list
+                            ):
+                                type_list.append("int")
+                        paramtype = []
+
+                        if "int" in type_list:
+                            paramtype.append("int")
+                            for single_type in type_list:
+                                if single_type != "int":
+                                    paramtype.append(single_type)
+
+                        elif "short" in type_list:
+                            paramtype.append("short")
+                            for single_type in type_list:
+                                if single_type != "short":
+                                    paramtype.append(single_type)
+
+                        elif "char" in type_list:
+                            paramtype.append("char")
+                            for single_type in type_list:
+                                if single_type != "char":
+                                    paramtype.append(single_type)
+
+                        elif "bool" in type_list:
+                            paramtype.append("bool")
+                            for single_type in type_list:
+                                if single_type != "bool":
+                                    paramtype.append(single_type)
+
+                        elif "str" in type_list:
+                            paramtype.append("str")
+                            for single_type in type_list:
+                                if single_type != "str":
+                                    paramtype.append(single_type)
+
+                        elif "float" in type_list:
+                            paramtype.append("float")
+                            for single_type in type_list:
+                                if single_type != "float":
+                                    paramtype.append(single_type)
+
+                        if "struct" in type_list:
+                            paramtype.append("struct")
+                            for single_type in type_list:
+                                if single_type != "struct":
+                                    paramtype.append(single_type)
+
+                        if "union" in type_list:
+                            paramtype.append("union")
+                            for single_type in type_list:
+                                if single_type != "union":
+                                    paramtype.append(single_type)
+
+                        if isarr > 0:
+                            temp_type = []
+                            temp_type.append(paramtype[0])
+                            for i in range(isarr):
+                                temp_type[0] += " *"
+
+                            for i in range(len(paramtype)):
+                                if i > isarr:
+                                    temp_type.append(paramtype[i])
+                            paramtype = temp_type
+                            paramtype.append("arr")
+                            for i in range(len(type_list)):
+                                if (
+                                    type_list[len(type_list) - i - 1][0] == "["
+                                    and type_list[len(type_list) - i - 1][-1] == "]"
+                                ):
+                                    paramtype.append(type_list[len(type_list) - i - 1])
+
+                        if "void" in type_list:
+                            paramtype.append("void")
+                            for single_type in type_list:
+                                if single_type != "void":
+                                    paramtype.append(single_type)
+
+                        if "*" in type_list:
+                            temp_type = []
+                            temp_type.append(paramtype[0])
+                            for i in range(1, len(paramtype)):
+                                if paramtype[i] == "*":
+                                    temp_type[0] += " *"
+                                else:
+                                    temp_type.append(paramtype[i])
+                            paramtype = temp_type
+
+                        if (
+                            p[3] is None
+                            or paramtype is None
+                            or p[3].parameters[ctr] is None
+                            or paramtype == []
+                            or p[3].parameters[ctr] == []
+                        ):
+                            self.symtab.error = 1
+                            print(
+                                bcolors.FAIL
+                                + "Cannot call function at line "
+                                + str(p.lineno(2))
+                                + bcolors.ENDC
                             )
                             return
 
-                        if "*" in i["data_type"] and p[3].parameters[ctr][0] == "float":
-                            self.symtab.error = True
-                            print(bcolors.FAIL+
-                                "Unable to assign a float value to pointer at Line No.: "
-                                + str(p.lineno(2))+bcolors.ENDC
-                            )
-                            return
-                        if (
-                            "struct" in i["data_type"][0]
-                            and "struct" not in p[3].parameters[ctr]
-                        ):
-                            self.symtab.error = True
-                            print(bcolors.FAIL+
-                                "Unable to assign a non-struct value to struct object at Line No.: "
-                                + str(p.lineno(2))+bcolors.ENDC
-                            )
-                            return
-                        if (
-                            "struct" not in i["data_type"][0]
-                            and "struct" in p[3].parameters[ctr]
-                        ):
-                            self.symtab.error = True
-                            print(bcolors.FAIL+
-                                "Unable to assign a struct value to non-struct at Line No.: "
-                                + str(p.lineno(2))+bcolors.ENDC
-                            )
-                            return
-                        if (
-                            "struct" in i["data_type"][0]
-                            and "struct" in p[3].parameters[ctr]
-                            and p[3].parameters[ctr][1] not in i["data_type"]
-                        ):
-                            self.symtab.error = True
-                            print(bcolors.FAIL+
-                                "Unable to assign a struct value to these objects (since incompatible) at Line No.: "
-                                + str(p.lineno(2))+bcolors.ENDC
-                            )
-                            return
-                        if (
-                            "union" in i["data_type"][0]
+                        if ("struct" in paramtype or "union" in paramtype) and (
+                            "struct" not in p[3].parameters[ctr]
                             and "union" not in p[3].parameters[ctr]
                         ):
-                            self.symtab.error = True
-                            print(bcolors.FAIL+
-                                "Unable to assign a non-union value to object of union type at Line No.: "
-                                + str(p.lineno(2))+bcolors.ENDC
+                            self.symtab.error = 1
+                            print(
+                                bcolors.FAIL
+                                + "Need struct/union value "
+                                + str(paramtype)
+                                + " to call function but got non- struct/union type "
+                                + str(p[3].parameters[ctr])
+                                + " at line "
+                                + str(p.lineno(2))
+                                + bcolors.ENDC
                             )
                             return
+
                         if (
-                            "union" not in i["data_type"][0]
-                            and "union" in p[3].parameters[ctr]
+                            "struct" not in paramtype and "union" not in paramtype
+                        ) and (
+                            "struct" in p[3].parameters[ctr]
+                            or "union" in p[3].parameters[ctr]
                         ):
-                            self.symtab.error = True
-                            print(bcolors.FAIL+
-                                "Unable to assign a union value to non-union type at Line No.: "
-                                + str(p.lineno(2))+bcolors.ENDC
+                            self.symtab.error = 1
+                            print(
+                                bcolors.FAIL
+                                + "Need non-struct/union value "
+                                + str(paramtype)
+                                + " to call function but got struct/union type "
+                                + str(p[3].parameters[ctr])
+                                + " at line "
+                                + str(p.lineno(2))
+                                + bcolors.ENDC
                             )
                             return
+
                         if (
-                            "union" in i["data_type"][0]
-                            and "union" in p[3].parameters[ctr]
-                            and p[3].parameters[ctr][1] not in i["data_type"]
+                            "struct" in paramtype
+                            and "struct" in p[3].parameters[ctr]
+                            and paramtype[1] != p[3].parameters[ctr][1]
                         ):
-                            self.symtab.error = True
-                            print(bcolors.FAIL+
-                                "Unable to assign a union value to to these objects (since incompatible) at Line No.: "
-                                + str(p.lineno(2))+bcolors.ENDC
+                            self.symtab.error = 1
+                            print(
+                                bcolors.FAIL
+                                + "Incompatible struct types to call function at line "
+                                + str(p.lineno(2))
+                                + bcolors.ENDC
                             )
                             return
+
+                        if (
+                            "union" in paramtype
+                            and "union" in p[3].parameters[ctr]
+                            and paramtype[1] != p[3].parameters[ctr][1]
+                        ):
+                            self.symtab.error = 1
+                            print(
+                                bcolors.FAIL
+                                + "Incompatible union types to call function at line "
+                                + str(p.lineno(2))
+                                + bcolors.ENDC
+                            )
+                            return
+
+                        if (
+                            paramtype[0] in ["bool", "char", "short", "int", "float"]
+                            and p[3].parameters[ctr][0]
+                            not in ["bool", "char", "short", "int", "float"]
+                            and p[3].parameters[ctr][0][-1] != "*"
+                        ):
+                            self.symtab.error = 1
+                            print(
+                                bcolors.FAIL
+                                + "Invalid parameter type to call function at line "
+                                + str(p.lineno(2))
+                                + bcolors.ENDC
+                            )
+                            return
+
+                        if (
+                            paramtype[0]
+                            not in ["bool", "char", "short", "int", "float"]
+                            and paramtype[0][-1] != "*"
+                            and p[3].parameters[ctr][0]
+                            in ["bool", "char", "short", "int", "float"]
+                        ):
+                            self.symtab.error = 1
+                            print(
+                                bcolors.FAIL
+                                + "Invalid parameter type to call function at line "
+                                + str(p.lineno(2))
+                                + bcolors.ENDC
+                            )
+                            return
+
+                        if (
+                            paramtype[0][-1] == "*"
+                            and p[3].parameters[ctr][0]
+                            not in ["bool", "char", "short", "int"]
+                            and p[3].parameters[ctr][0][-1] != "*"
+                            and "str" not in p[3].parameters[ctr]
+                        ):
+                            self.symtab.error = 1
+                            print(
+                                bcolors.FAIL
+                                + "Incompatible assignment between pointer and "
+                                + str(p[3].parameters[ctr])
+                                + " at line "
+                                + str(p.lineno(2))
+                                + bcolors.ENDC
+                            )
+                            return
+
+                        if self.symtab.error:
+                            return
+
+                        isin = True
+                        p3totype = []
+                        for single_type in paramtype:
+                            if (
+                                single_type != "arr"
+                                and single_type[0] != "["
+                                and single_type[-1] != "]"
+                            ):
+                                p3totype.append(single_type)
+                                if single_type not in p[3].parameters[ctr]:
+                                    isin = False
+
+                        if isin == False:
+
+                            p3temp = self.three_address_code.create_temp_var()
+                            self.symtab.insert_symbol(p3temp, 0)
+                            self.symtab.modify_symbol(p3temp, "data_type", p3totype)
+                            self.symtab.modify_symbol(p3temp, "identifier_type", "TEMP")
+                            self.symtab_size_update(p3totype, p3temp)
+                            if self.symtab.is_global(p3temp):
+                                self.symtab.modify_symbol(
+                                    p3temp, "variable_scope", "Global"
+                                )
+                            else:
+                                self.symtab.modify_symbol(
+                                    p3temp, "variable_scope", "Local"
+                                )
+                                found, entry = self.symtab.return_sym_tab_entry(p3temp)
+                                var_size = found["allocated_size"]
+                                if found["variable_scope"] == "Local":
+                                    if found["offset"] > 0:
+                                        self.symtab.modify_symbol(
+                                            p3temp,
+                                            "temp",
+                                            f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                                        )
+                                    else:
+                                        self.symtab.modify_symbol(
+                                            p3temp,
+                                            "temp",
+                                            f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                                        )
+                                p3temp = found["temp"]
+
+                            currtype = []
+                            for single_type in p[3].parameters[ctr]:
+                                if (
+                                    single_type != "arr"
+                                    and single_type[0] != "["
+                                    and single_type[-1] != "]"
+                                ):
+                                    currtype.append(single_type)
+                            currtyprstr = "," + " ".join(currtype).replace(" ", "_")
+
+                            self.three_address_code.emit(
+                                "cast",
+                                p3temp,
+                                p[3].argument_list[ctr][0],
+                                " ".join(p3totype).replace(" ", "_") + currtyprstr,
+                            )
+                            p[3].argument_list[ctr] = [p3temp, p3totype]
 
                     p[0].type = p[1].ret_type
 
-            elif p[2] == "[":
+                p[0].var_name = p[1].var_name
+                if self.symtab.error:
+                    return
 
-                if p[3] == None:
-                    self.symtab.error = True
-                    print(bcolors.FAIL+"Array subscript is invalid at Line No.: " + str(p.lineno(2))+bcolors.ENDC)
+                p[0].temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p[0].temp, 0)
+                self.symtab.modify_symbol(p[0].temp, "data_type", p[0].type)
+                self.symtab.modify_symbol(p[0].temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[0].type, p[0].temp)
+                if self.symtab.is_global(p[0].temp):
+                    self.symtab.modify_symbol(p[0].temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p[0].temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p[0].temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p[0].temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p[0].temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p[0].temp = found["temp"]
+
+                math_funcs_list_single = [
+                    "sqrt",
+                    "ceil",
+                    "floor",
+                    "fabs",
+                    "log",
+                    "log10",
+                    "exp",
+                    "cos",
+                    "sin",
+                    "acos",
+                    "asin",
+                    "tan",
+                    "atan",
+                ]
+                math_funcs_list_double = ["pow", "fmod"]
+                for arg in reversed(p[3].argument_list):
+                    if p[1].label == "printf":
+                        if arg[0][0] == "$":
+                            self.three_address_code.emit("param", arg[0], "", "")
+                        else:
+                            if "float" in arg[1]:
+                                self.three_address_code.emit(
+                                    "printf_push_float", arg[0]
+                                )
+                            elif "char" in arg[1]:
+                                self.three_address_code.emit("printf_push_char", arg[0])
+                            else:
+                                self.three_address_code.emit("param", arg[0], "", "")
+                    elif p[1].label in math_funcs_list_single:
+                        if "float" in arg[1]:
+                            self.three_address_code.emit("math_func_push_float", arg[0])
+                        elif "int" in arg[1]:
+                            self.three_address_code.emit("math_func_push_int", arg[0])
+                        elif "char" in arg[1]:
+                            self.three_address_code.emit("push_char", arg[0])
+                        else:
+                            self.three_address_code.emit("math_func_push_int", arg[0])
+                    elif p[1].label in math_funcs_list_double:
+                        if "float" in arg[1]:
+                            self.three_address_code.emit("pow_func_push_float", arg[0])
+                        elif "int" in arg[1]:
+                            self.three_address_code.emit("pow_func_push_int", arg[0])
+                        elif "char" in arg[1]:
+                            self.three_address_code.emit("push_char", arg[0])
+                        else:
+                            self.three_address_code.emit("pow_func_push_int", arg[0])
+                    else:
+                        new_p2_list = []
+                        for elem in arg[1]:
+                            if elem != "arr" and elem[0] != "[" and elem[-1] != "]":
+                                new_p2_list = new_p2_list + elem.split(" ")
+                        req_type = "void"
+                        if "char" in arg[1]:
+                            self.three_address_code.emit("push_char", arg[0])
+                        else:
+                            if "*" in new_p2_list:
+                                req_type = "ptr"
+                            else:
+                                req_type = " ".join(new_p2_list)
+                            if req_type in datatype_size:
+                                if "struct" in new_p2_list and "*" not in new_p2_list:
+                                    to_print = self.recurse_struct(new_p2_list, arg[0])
+                                    to_print.reverse()
+                                    for item in to_print:
+                                        if item[0] == 1:
+                                            self.three_address_code.emit(
+                                                "push_char", item[1]
+                                            )
+                                        else:
+                                            self.three_address_code.emit(
+                                                "param", item[1], "$4"
+                                            )
+                                else:
+                                    self.three_address_code.emit(
+                                        "param", arg[0], f"${datatype_size[req_type]}"
+                                    )
+                            else:
+                                self.symtab.error = 1
+                                print(
+                                    bcolors.FAIL
+                                    + "Invalid type given in line number "
+                                    + str(p.lineno(4))
+                                    + bcolors.ENDC
+                                )
+
+                found, entry = self.symtab.return_sym_tab_entry(p[1].label)
+                if ("struct" in found["data_type"]) and ("*" not in found["data_type"]):
+                    self.three_address_code.emit(
+                        "callq_struct", p[0].temp, p[1].label, len(p[3].argument_list)
+                    )
+                elif found["data_type"] == ["void"]:
+                    self.three_address_code.emit(
+                        "callq", "", p[1].label, len(p[3].argument_list)
+                    )
+                elif ("char" in found["data_type"]) and ("*" not in found["data_type"]):
+                    self.three_address_code.emit(
+                        "callq_char", p[0].temp, p[1].label, len(p[3].argument_list)
+                    )
+                else:
+                    self.three_address_code.emit(
+                        "callq", p[0].temp, p[1].label, len(p[3].argument_list)
+                    )
+                    p[0].true_list.append(self.three_address_code.next_statement)
+                    p[0].false_list.append(self.three_address_code.next_statement + 1)
+                    self.three_address_code.emit("ifnz goto", "", p[0].temp, "")
+                    self.three_address_code.emit("goto", "", "", "")
+
+            elif p[2] == "[":
+                if (
+                    p[3] is None
+                    or p[3].type is None
+                    or p[3].type == []
+                    or p[1] is None
+                    or p[1].type is None
+                    or p[1].type == []
+                ):
+                    self.symtab.error = 1
+                    print(
+                        bcolors.FAIL
+                        + "Invalid call to access array element at line "
+                        + str(p.lineno(2))
+                        + bcolors.ENDC
+                    )
                     return
 
                 flag = 0
-                if "int" in p[3].type:
-                    flag = 1
-                elif "char" in p[3].type:
+                if p[3].type[0] in ["bool", "char", "short", "int"]:
                     flag = 1
 
                 if flag == 0:
-                    self.symtab.error = True
-                    print(bcolors.FAIL+
-                        "Array subscript of type "
+                    self.symtab.error = 1
+                    print(
+                        bcolors.FAIL
+                        + "Invalid array subscript of type "
                         + str(p[3].type)
-                        + " is invalid at Line No.: "
-                        + str(p.lineno(2))+bcolors.ENDC
+                        + " at line "
+                        + str(p.lineno(2))
+                        + bcolors.ENDC
                     )
+                    return
                 else:
                     if p[1].type[0][-1] != "*":
-                        self.symtab.error = True
-                        print(bcolors.FAIL+
-                            "Expression of the type "
+                        self.symtab.error = 1
+                        print(
+                            bcolors.FAIL
+                            + "Expression of type "
                             + str(p[1].type)
-                            + " isn't an array type at Line No.: "
-                            + str(p.lineno(2))+bcolors.ENDC
+                            + " not an array at line "
+                            + str(p.lineno(2))
+                            + bcolors.ENDC
+                        )
+                        return
+                    else:
+                        p[0] = Node("array_subscript", [p[1], p[3]])
+                        p[0].type = []
+                        for single_type in p[1].type:
+                            if single_type[0] == "[" and single_type[-1] == "]":
+                                pass
+                            else:
+                                p[0].type.append(single_type)
+
+                        p[0].type[0] = p[0].type[0][0:-2]
+                        p[0].array_level = p[1].array_level - 1
+
+                        if p[0].type[0][-1] != "*":
+                            p[0].is_var = 1
+                        elif "arr" not in p[0].type:
+                            p[0].is_var = 1
+                        for i in range(len(p[1].type)):
+                            if p[1].type[i][0] == "[" and p[1].type[i][-1] == "]":
+                                p[0].type.append(p[1].type[i])
+
+                        if "struct" in p[0].type[0] or "union" in p[0].type[0]:
+                            p[0].vars = p[1].vars
+
+                p[0].var_name = p[1].var_name
+                p[0].temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p[0].temp, 0)
+                self.symtab.modify_symbol(p[0].temp, "data_type", ["int"])
+                self.symtab.modify_symbol(p[0].temp, "identifier_type", "TEMP")
+                self.symtab_size_update(["int"], p[0].temp)
+                if self.symtab.is_global(p[0].temp):
+                    self.symtab.modify_symbol(p[0].temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p[0].temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p[0].temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p[0].temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p[0].temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p[0].temp = found["temp"]
+
+                p[0].dim_list = p[1].dim_list
+                is_first_access = False
+
+                if p[0].dim_list is None:
+
+                    arrtemp = self.three_address_code.create_temp_var()
+                    self.symtab.insert_symbol(arrtemp, 0)
+                    self.symtab.modify_symbol(arrtemp, "data_type", ["int"])
+                    self.symtab.modify_symbol(arrtemp, "identifier_type", "TEMP")
+                    self.symtab_size_update(["int"], arrtemp)
+                    if self.symtab.is_global(arrtemp):
+                        self.symtab.modify_symbol(arrtemp, "variable_scope", "Global")
+                    else:
+                        self.symtab.modify_symbol(arrtemp, "variable_scope", "Local")
+                        found, entry = self.symtab.return_sym_tab_entry(arrtemp)
+                        var_size = found["allocated_size"]
+                        if found["variable_scope"] == "Local":
+                            if found["offset"] > 0:
+                                self.symtab.modify_symbol(
+                                    arrtemp,
+                                    "temp",
+                                    f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                                )
+                            else:
+                                self.symtab.modify_symbol(
+                                    arrtemp,
+                                    "temp",
+                                    f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                                )
+                        arrtemp = found["temp"]
+
+                    var = 0
+                    if "*" in (" ".join(p[0].type)).split(" "):
+                        var = 4
+                    else:
+                        var = datatype_size[" ".join(p[0].type)]
+
+                    self.three_address_code.emit("*_int", arrtemp, p[3].temp, f"${var}")
+
+                    if p[1].address is not None:
+                        var = p[1].address.split("(")[0]
+                        if var[0] != "-":
+                            var = "+" + var
+                        self.three_address_code.emit(
+                            "+_int", p[0].temp, f"%ebp{var}", arrtemp
                         )
                     else:
-                        p[0] = Node("ArraySubscript", [p[1], p[3]])
-                        p[0].type = p[1].type
-                        p[0].type[0] = p[0].type[0][0:-1]
-                        if p[0].type[0][-1] == " ":
-                            p[0].type[0] = p[0].type[0][0:-1]
-                            p[0].is_var = 1
+                        self.three_address_code.emit(
+                            "+_int", p[0].temp, p[1].temp, arrtemp
+                        )
+
+                    self.three_address_code.emit("UNARY*", p[0].temp, p[0].temp, "")
+
+                    p[0].temp = f"({p[0].temp})"
+
+                    p[0].true_list.append(self.three_address_code.next_statement)
+                    p[0].false_list.append(self.three_address_code.next_statement + 1)
+                    self.three_address_code.emit("ifnz goto", "", p[0].temp, "")
+                    self.three_address_code.emit("goto", "", "", "")
+                    p[0].address = None
+
+                else:
+                    if (
+                        len(p[0].dim_list) > 0
+                        and p[0].dim_list[-1] == "is_first_access"
+                    ):
+                        is_first_access = True
+                        p[0].dim_list.pop()
+
+                    if is_first_access:
+                        self.three_address_code.emit("=_int", p[0].temp, p[3].temp, "")
+                    else:
+                        if len(p[0].dim_list) == 0:
+                            self.symtab.error = 1
+                            return
+                        curDimension = p[0].dim_list[-1]
+                        self.three_address_code.emit(
+                            "*_int", p[0].temp, p[1].temp, f"${curDimension}"
+                        )
+                        self.three_address_code.emit(
+                            "+_int", p[0].temp, p[0].temp, p[3].temp
+                        )
+
+                    p[0].dim_list.pop()
+
+                    if len(p[0].dim_list) == 0:
+                        if p[0].type[0][-1] == "*":
+                            self.three_address_code.emit(
+                                "*_int", p[0].temp, p[0].temp, "$4"
+                            )
+                        else:
+                            if "struct" == p[0].type[0] or "union" == p[0].type[0]:
+                                strtype = p[0].type[0] + " " + p[0].type[1]
+                                self.three_address_code.emit(
+                                    "*_int",
+                                    p[0].temp,
+                                    p[0].temp,
+                                    f"${datatype_size[ strtype ]}",
+                                )
+                            else:
+                                self.three_address_code.emit(
+                                    "*_int",
+                                    p[0].temp,
+                                    p[0].temp,
+                                    f"${datatype_size[p[0].type[0]]}",
+                                )
+
+                        if p[1].address is None or p[1].address == "":
+                            self.symtab.error = 1
+                            return
+                        var = p[1].address[4]
+                        p1_addr = p[1].address
+                        if var == "+":
+                            p1_addr = f"{p[1].address[5:]}(%ebp)"
+                        self.three_address_code.emit(
+                            "+_int", p[0].temp, p1_addr, p[0].temp
+                        )
+                        p[0].temp = f"({p[0].temp})"
+
+                        p[0].true_list.append(self.three_address_code.next_statement)
+                        p[0].false_list.append(
+                            self.three_address_code.next_statement + 1
+                        )
+                        self.three_address_code.emit("ifnz goto", "", p[0].temp, "")
+                        self.three_address_code.emit("goto", "", "", "")
+
+                p[0].address = p[1].address
 
     def p_argument_expression_list(self, p):
         """
@@ -806,21 +2083,33 @@ class Parser:
             return
         if len(p) == 2:
             p[0] = p[1]
-            if p[1] == None:
+            if p[1] is None:
                 return
             p[0].parameter_nums = 1
             p[0].parameters = []
             p[0].parameters.append(p[1].type)
-            p[0].type = ["arg list"]
+            if p[1].type is None:
+                p[1].type = ["Dummy"]
+            p[0].argument_list = [[p[1].temp, p[1].type]]
 
         elif len(p) == 4:
             p[0] = Node(",", [p[1], p[3]])
-            if p[1] == None:
+            if (
+                p[1] is None
+                or p[1].parameter_nums is None
+                or p[1].argument_list is None
+                or p[1].parameters is None
+                or p[3] is None
+                or p[3].temp is None
+                or p[3].type is None
+                or p[3].type == []
+            ):
                 return
             p[0].parameter_nums = p[1].parameter_nums + 1
-            p[0].type = ["arg list"]
             p[0].parameters = p[1].parameters
             p[0].parameters.append(p[3].type)
+            p[0].argument_list = p[1].argument_list
+            p[0].argument_list.append([p[3].temp, p[3].type])
 
     def p_unary_expression(self, p):
         """
@@ -840,44 +2129,162 @@ class Parser:
         elif len(p) == 3:
             if p[1] == "++" or p[1] == "--":
 
-                if p[2].type is None:
+                if p[2] is None or p[2].type is None or p[2].type == []:
                     self.symtab.error = True
-                    print(bcolors.FAIL+
-                        "Unable to increment/decrement the value of expression at Line No.: "
-                        + str(p.lineno(1))+bcolors.ENDC
+                    print(
+                        bcolors.FAIL
+                        + "Unable to increment/decrement the value of expression at Line No.: "
+                        + str(p.lineno(1))
+                        + bcolors.ENDC
                     )
 
-                elif p[2].type[0] not in ["int", "char"]:
+                elif p[2].type[0] not in ["int", "char", "short"]:
                     self.symtab.error = True
-                    print(bcolors.FAIL+
-                        "Unable to use increment/decrement operator on a non-integral at Line No.: "
-                        + str(p.lineno(1))+bcolors.ENDC
+                    print(
+                        bcolors.FAIL
+                        + "Unable to use increment/decrement operator on a non-integral at Line No.: "
+                        + str(p.lineno(1))
+                        + bcolors.ENDC
                     )
-                elif p[2].is_terminal == False:
+                elif p[2].is_terminal == False and p[2].is_var == False:
                     self.symtab.error = True
-                    print(bcolors.FAIL+
-                        "Unable to use increment/decrement operator on the expression at Line No.: "
-                        + str(p.lineno(1))+bcolors.ENDC
+                    print(
+                        bcolors.FAIL
+                        + "Unable to use increment/decrement operator on the expression at Line No.: "
+                        + str(p.lineno(1))
+                        + bcolors.ENDC
                     )
-                elif p[2].is_var == 0:
+                elif p[2].is_var == False and p[2].type[0][-1] != "*":
                     self.symtab.error = True
-                    print(bcolors.FAIL+
-                        "Unable to use increment/decrement operator on a constant at Line No.: "
-                        + str(p.lineno(1))+bcolors.ENDC
+                    print(
+                        bcolors.FAIL
+                        + "Unable to use increment/decrement operator on a constant at Line No.: "
+                        + str(p.lineno(1))
+                        + bcolors.ENDC
+                    )
+                elif p[2].type[0][-1] == "*" and "arr" in p[2].type:
+                    self.symtab.error = True
+                    print(
+                        bcolors.FAIL
+                        + "Unable to use increment/decrement operator on array at Line No.: "
+                        + str(p.lineno(1))
+                        + bcolors.ENDC
                     )
                 else:
                     p[0] = Node("Prefix" + str(p[1]), children=[p[2]])
+                    if p[2].type is None:
+                        p[2].type = []
+                    p[0].type = p[2].type
 
-                    if p[2].type[0] in ["char", "short"]:
-                        p[0].type = ["int"]
-                        p[0].type += p[2].type[1:]
-                        p[2].totype = p[0].type
-                    else:
-                        p[0].type = p[2].type
+                if self.symtab.error:
+                    return
+
+                p[0].var_name = p[2].var_name
+                p[0].temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p[0].temp, 0)
+                self.symtab.modify_symbol(p[0].temp, "data_type", p[0].type)
+                self.symtab.modify_symbol(p[0].temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[0].type, p[0].temp)
+                if self.symtab.is_global(p[0].temp):
+                    self.symtab.modify_symbol(p[0].temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p[0].temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p[0].temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p[0].temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p[0].temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p[0].temp = found["temp"]
+                self.three_address_code.emit("=_int", p[0].temp, p[2].temp, "")
+                if str(p[1]) == "++":
+                    self.three_address_code.emit("+_int", p[0].temp, p[0].temp, f"$1")
+                    self.three_address_code.emit("+_int", p[2].temp, p[2].temp, f"$1")
+                else:
+                    self.three_address_code.emit("-_int", p[0].temp, p[0].temp, f"$1")
+                    self.three_address_code.emit("-_int", p[2].temp, p[2].temp, f"$1")
+                p[0].true_list.append(self.three_address_code.next_statement)
+                p[0].false_list.append(self.three_address_code.next_statement + 1)
+                self.three_address_code.emit("ifnz goto", "", p[0].temp, "")
+                self.three_address_code.emit("goto", "", "", "")
 
             elif p[1] == "sizeof":
                 p[0] = Node("SIZEOF", [p[2]])
                 p[0].type = ["int"]
+                if self.symtab.error:
+                    return
+                p[0].temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p[0].temp, 0)
+                self.symtab.modify_symbol(p[0].temp, "data_type", p[0].type)
+                self.symtab.modify_symbol(p[0].temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[0].type, p[0].temp)
+                if self.symtab.is_global(p[0].temp):
+                    self.symtab.modify_symbol(p[0].temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p[0].temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p[0].temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p[0].temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p[0].temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p[0].temp = found["temp"]
+
+                p[0].var_name = p[2].var_name
+                if p[2].type is None or p[2].type == []:
+                    self.symtab.error = 1
+                    print(
+                        bcolors.FAIL
+                        + f"Invalid type given in line number {p.lineno(1)}"
+                    )
+                    return
+                new_p2_list = []
+                multiplier = 1
+                for elem in p[2].type:
+                    if elem != "arr" and elem[0] != "[" and elem[-1] != "]":
+                        new_p2_list = new_p2_list + elem.split(" ")
+
+                    elif elem[0] == "[" and elem[-1] == "]":
+                        multiplier *= int(elem[1:-1])
+
+                req_type = "void"
+                if "*" in new_p2_list:
+                    req_type = "ptr"
+                else:
+                    req_type = " ".join(new_p2_list)
+                if req_type in datatype_size:
+                    self.three_address_code.emit(
+                        "=_int", p[0].temp, f"${multiplier*datatype_size[req_type]}"
+                    )
+                else:
+                    self.symtab.error = 1
+                    print(
+                        bcolors.FAIL
+                        + f"Invalid type given in line number {p.lineno(1)}"
+                    )
+                    return
+                p[0].true_list.append(self.TAC.nextstat)
+                p[0].false_list.append(self.TAC.nextstat + 1)
+                self.TAC.emit("ifnz goto", "", p[0].temp, "")
+                self.TAC.emit("goto", "", "", "")
 
             else:
                 p[0] = p[1]
@@ -885,60 +2292,122 @@ class Parser:
                     p[0].children.append(p[2])
                     graph.add_edge(p[0].node, p[2].node)
 
-                    if p[2].type == None:
+                    if p[2].type is None or p[2].type == []:
                         self.symtab.error = True
-                        print(bcolors.FAIL+
-                            "Unable to perform a unary operation at Line No.: "
-                            + str(p.lineno(1))+bcolors.ENDC
+                        print(
+                            bcolors.FAIL
+                            + "Unable to perform a unary operation at Line No.: "
+                            + str(p.lineno(1))
+                            + bcolors.ENDC
                         )
                         return
 
                     if p[1].label[-1] in ["+", "-", "!"]:
-                        if p[2].type[0] in ["int", "char", "float"]:
+                        if (
+                            p[2].type[0] in ["short", "int", "char", "float"]
+                            and p[2].type != []
+                        ):
                             p[0].type = [p[2].type[0]]
-                            if p[2].type[0] == "char" or p[1].label[-1] == "!":
+                            if (
+                                p[2].type[0] in ["char", "short", "int"]
+                                or p[1].label[-1] == "!"
+                            ):
                                 p[0].type = ["int"]
                             else:
                                 pass
+
+                            if p[0].label[-1] != "!":
+                                if p[0].type != p[2].type:
+                                    p[2].totype = p[0].type
+                                    p2str = "to"
+                                    for single_type in p[0].type:
+                                        p2str += "_" + single_type
+                                    p2 = Node(p2str, [p[2]])
+                                else:
+                                    p[2].totype = None
+                                    p2 = p[2]
+
+                                for single_type in p[0].type:
+                                    p[0].label += "_" + single_type
+
+                                p[0].label = p[0].label.replace(" ", "_")
+                                p[0].node.attr["label"] = p[0].label
+
                         else:
                             self.symtab.error = True
-                            print(bcolors.FAIL+
-                                "Invalid usage of unary operator for operand "
+                            print(
+                                bcolors.FAIL
+                                + "Invalid usage of unary operator for operand "
                                 + str(p[2].type)
                                 + " type at Line No.: "
-                                + str(p.lineno(1))+bcolors.ENDC
+                                + str(p.lineno(1))
+                                + bcolors.ENDC
                             )
 
                     elif p[1].label[-1] == "~":
-                        if p[2].type[0] in ["int", "char"]:
-                            p[0].type = [p[2].type[0]]
-                            if p[2].type[0] == "char":
-                                p[0].type = ["int"]
+                        if len(p[2].type) > 0 and p[2].type[0] in [
+                            "bool",
+                            "char",
+                            "short",
+                            "int",
+                        ]:
+                            p[0].type = ["int"]
+                            if p[0].type != p[2].type:
+                                p[2].totype = p[0].type
+                                p2str = "to"
+                                for single_type in p[0].type:
+                                    p2str += "_" + single_type
+                                p2 = Node(p2str, [p[2]])
                             else:
-                                pass
+                                p[2].totype = None
+                                p2 = p[2]
+
+                            for single_type in p[0].type:
+                                p[0].label += "_" + single_type
+                            p[0].label = p[0].label.replace(" ", "_")
+                            p[0].node.attr["label"] = p[0].label
+
                         else:
                             self.symtab.error = True
-                            print(bcolors.FAIL+
-                                "Invalid usage of unary operator for operand "
+                            print(
+                                bcolors.FAIL
+                                + "Invalid usage of unary operator for operand "
                                 + str(p[2].type)
                                 + " type at Line No.: "
-                                + str(p.lineno(1))+bcolors.ENDC
+                                + str(p.lineno(1))
+                                + bcolors.ENDC
                             )
 
                     elif p[1].label[-1] == "*":
-                        if p[2].type[0][-1] != "*":
+                        if p[2] is None or p[2].type is None or p[2].type == []:
                             self.symtab.error = True
-                            print(bcolors.FAIL+
-                                "Invalid usage of unary operator for operand "
+                            print(
+                                bcolors.FAIL
+                                + "Invalid usage of unary operator * at Line No.: "
+                                + str(p.lineno(1))
+                                + bcolors.ENDC
+                            )
+                            return
+                        elif (
+                            len(p[2].type) > 0
+                            and p[2].type[0][-1] != "*"
+                            and ("*" not in p[2].type)
+                        ):
+                            self.symtab.error = True
+                            print(
+                                bcolors.FAIL
+                                + "Invalid usage of unary operator for operand "
                                 + str(p[2].type)
                                 + " type at Line No.: "
-                                + str(p.lineno(1))+bcolors.ENDC
+                                + str(p.lineno(1))
+                                + bcolors.ENDC
                             )
+                            return
                         else:
                             p[0].is_var = 1
                             p[0].type = p[2].type
                             p[0].type[0] = p[0].type[0][:-1]
-                            if p[0].type[0][-1] == " ":
+                            if len(p[0].type) > 0 and p[0].type[0][-1] == " ":
                                 p[0].type[0] = p[0].type[0][:-1]
                             try:
                                 p[0].vars = p[2].vars
@@ -947,19 +2416,36 @@ class Parser:
 
                     elif p[1].label[-1] == "&":
 
-                        if (
-                            "struct" != p[2].type[0]
+                        if p[2] is None or p[2].type is None or p[2].type == []:
+                            self.symtab.error = True
+                            print(
+                                bcolors.FAIL
+                                + "Invalid usage of unary operator * at Line No.: "
+                                + str(p.lineno(1))
+                                + bcolors.ENDC
+                            )
+                            return
+                        elif (
+                            len(p[2].type) > 0
+                            and "struct" != p[2].type[0]
                             and "union" != p[2].type[0]
                             and p[2].is_var == 0
                         ):
                             self.symtab.error = True
-                            print(bcolors.FAIL+
-                                "Unable to find a pointer for non-variable type : "
+                            print(
+                                bcolors.FAIL
+                                + "Unable to find a pointer for non-variable type : "
                                 + str(p[2].type)
                                 + " at Line No.: "
-                                + str(p.lineno(1))+bcolors.ENDC
+                                + str(p.lineno(1))
+                                + bcolors.ENDC
                             )
-                        elif "struct" == p[2].type[0] or "union" == p[2].type[0]:
+                            return
+                        elif (
+                            len(p[2].type) > 0
+                            and "struct" == p[2].type[0]
+                            or "union" == p[2].type[0]
+                        ):
                             p[0].type = p[2].type
                             p[0].type[0] += " *"
                             p[0].vars = p[2].vars
@@ -967,9 +2453,184 @@ class Parser:
                         else:
                             p[0].type = ["int", "unsigned"]
 
+                    try:
+                        p[0].insert_edge([p2])
+                    except:
+                        p[0].insert_edge([p[2]])
+
+                if self.symtab.error:
+                    return
+
+                if p[2].totype is not None and p[2].totype != p[2].type:
+
+                    p2.temp = self.three_address_code.create_temp_var()
+                    self.symtab.insert_symbol(p2.temp, 0)
+                    self.symtab.modify_symbol(p2.temp, "data_type", p[2].totype)
+                    self.symtab.modify_symbol(p2.temp, "identifier_type", "TEMP")
+                    self.symtab_size_update(p[2].totype, p2.temp)
+                    if self.symtab.is_global(p2.temp):
+                        self.symtab.modify_symbol(p2.temp, "variable_scope", "Global")
+                    else:
+                        self.symtab.modify_symbol(p2.temp, "variable_scope", "Local")
+                        found, entry = self.symtab.return_sym_tab_entry(p2.temp)
+                        var_size = found["allocated_size"]
+                        if found["variable_scope"] == "Local":
+
+                            if found["offset"] > 0:
+                                self.symtab.modify_symbol(
+                                    p2.temp,
+                                    "temp",
+                                    f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                                )
+                            else:
+                                self.symtab.modify_symbol(
+                                    p2.temp,
+                                    "temp",
+                                    f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                                )
+                        p2.temp = found["temp"]
+
+                    currtype = []
+                    for single_type in p[2].type:
+                        if (
+                            single_type != "arr"
+                            and single_type[0] != "["
+                            and single_type[-1] != "]"
+                        ):
+                            currtype.append(single_type)
+                    cstr = "," + " ".join(currtype).replace(" ", "_")
+
+                    self.three_address_code.emit(
+                        "cast",
+                        p2.temp,
+                        p[2].temp,
+                        " ".join(p[2].totype).replace(" ", "_") + cstr,
+                    )
+
+                else:
+
+                    try:
+                        p2.temp = p[2].temp
+                    except:
+                        pass
+
+                p[0].var_name = p[2].var_name
+                p[0].temp = self.three_address_code.create_temp_var()
+
+                self.symtab.insert_symbol(p[0].temp, 0)
+                self.symtab.modify_symbol(p[0].temp, "data_type", p[0].type)
+                self.symtab.modify_symbol(p[0].temp, "identifier_type", "TEMP")
+
+                if p[1].label == "UNARY*":
+
+                    try:
+                        found, entry = self.symtab.return_sym_tab_entry(
+                            p[2].var_name[0]
+                        )
+                    except:
+                        self.symtab.error = 1
+                        print(
+                            bcolors.FAIL
+                            + f"Invalid usage of UNARY* operator at line {p[1].lineno}"
+                        )
+                        return
+                    var_size = found["allocated_size"]
+                    self.symtab.modify_symbol(p[0].temp, "allocated_size", var_size)
+                else:
+                    self.symtab_size_update(p[0].type, p[0].temp)
+                if self.symtab.is_global(p[0].temp):
+                    self.symtab.modify_symbol(p[0].temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p[0].temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p[0].temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p[0].temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p[0].temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p[0].temp = found["temp"]
+                try:
+                    self.three_address_code.emit(p[0].label, p[0].temp, p2.temp)
+                except:
+                    self.three_address_code.emit(p[0].label, p[0].temp, p[2].temp)
+
+                if p[1].label == "UNARY*":
+                    p[0].temp = f"({p[0].temp})"
+
+                if p[1].label[-1] == "!":
+                    p[0].true_list = p[1].false_list
+                    p[0].false_list = p[1].true_list
+                else:
+                    p[0].true_list.append(self.three_address_code.next_statement)
+                    p[0].false_list.append(self.three_address_code.next_statement + 1)
+                    self.three_address_code.emit("ifnz goto", "", p[0].temp, "")
+                    self.three_address_code.emit("goto", "", "", "")
+
         elif len(p) == 5:
             p[0] = Node("SIZEOF", [p[3]])
             p[0].type = ["int"]
+            if self.symtab.error:
+                return
+
+            p[0].temp = self.three_address_code.create_temp_var()
+            self.symtab.insert_symbol(p[0].temp, 0)
+            self.symtab.modify_symbol(p[0].temp, "data_type", p[0].type)
+            self.symtab.modify_symbol(p[0].temp, "identifier_type", "TEMP")
+            self.symtab_size_update(p[0].type, p[0].temp)
+            if self.symtab.is_global(p[0].temp):
+                self.symtab.modify_symbol(p[0].temp, "variable_scope", "Global")
+            else:
+                self.symtab.modify_symbol(p[0].temp, "variable_scope", "Local")
+                found, entry = self.symtab.return_sym_tab_entry(p[0].temp)
+                var_size = found["allocated_size"]
+                if found["variable_scope"] == "Local":
+
+                    if found["offset"] > 0:
+                        self.symtab.modify_symbol(
+                            p[0].temp,
+                            "temp",
+                            f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                        )
+                    else:
+                        self.symtab.modify_symbol(
+                            p[0].temp,
+                            "temp",
+                            f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                        )
+                p[0].temp = found["temp"]
+
+            if p[3].type is None or p[3].type == []:
+                self.symtab.error = 1
+                print(bcolors.FAIL + f"Invalid type given in line number {p.lineno(1)}")
+                return
+            req_type = "void"
+            if "*" in p[3].type:
+                req_type = "ptr"
+            else:
+                req_type = " ".join(p[3].type)
+
+            if req_type in datatype_size:
+                self.three_address_code.emit(
+                    "=_int", p[0].temp, f"${datatype_size[req_type]}"
+                )
+            else:
+                self.symtab.error = 1
+                print(bcolors.FAIL + f"Invalid type given in line number {p.lineno(1)}")
+                return
+            p[0].true_list.append(self.three_address_code.next_statement)
+            p[0].false_list.append(self.three_address_code.next_statement + 1)
+            self.three_address_code.emit("ifnz goto", "", p[0].temp, "")
+            self.three_address_code.emit("goto", "", "", "")
 
     def p_unary_operator(self, p):
         """
@@ -993,74 +2654,355 @@ class Parser:
         if self.error:
             return
 
-        if len(p) == 5:
+        if len(p) == 2:
+            p[0] = p[1]
+        elif len(p) == 5:
             chd = [p[2], p[4]]
             p[0] = Node("CAST", chd)
-            p[0].type = p[2].type
-
-            if p[2].type == None or p[4].type == None:
-                self.symtab.error = True
-                print(bcolors.FAIL+"Can't perform cast on line no. " + str(p.lineno(1))+bcolors.ENDC)
-
-            elif "struct" in p[2].type:
-                self.symtab.error = True
-                if "*" not in p[2].type and "struct" not in p[4].type:
-                    print(bcolors.FAIL+
-                        "Can't cast non-struct value "
-                        + str(p[4].type)
-                        + " to struct type "
-                        + str(p[2].type)
-                        + " at Line No.:"
-                        + str(p.lineno(1))+bcolors.ENDC
-                    )
-                elif "struct" in p[4].type and p[4].type[1] not in p[2].type:
-                    print(bcolors.FAIL+
-                        "Incompatible struct types to perform casting at Line No.: "
-                        + str(p.lineno(1))+bcolors.ENDC
-                    )
-
-            elif "union" in p[2].type:
-                self.symtab.error = True
-                if "*" not in p[2].type and "union" not in p[4].type:
-                    print(bcolors.FAIL+
-                        "Can't cast non-union value "
-                        + str(p[4].type)
-                        + " to union type "
-                        + str(p[2].type)
-                        + " at Line No.:"
-                        + str(p.lineno(1))+bcolors.ENDC
-                    )
-
-                elif "union" in p[4].type and p[4].type[1] not in p[2].type:
-                    print(bcolors.FAIL+
-                        "Incompatible union types to perform casting at Line No.: "
-                        + str(p.lineno(1))+bcolors.ENDC
-                    )
-
-            elif (
-                p[4].type[0] not in ["bool", "char", "short", "int", "float"]
-                and p[2].type[0] in ["bool", "char", "short", "int", "float"]
-            ) or (
-                "*" not in p[2].type
-                and p[2].type[0] not in ["bool", "char", "short", "int", "float"]
+            if (
+                p[2] is None
+                or p[2].type is None
+                or p[2].type == []
+                or p[4] is None
+                or p[4].type is None
+                or p[4].type == []
             ):
-                self.symtab.error = True
-                print(bcolors.FAIL+"Type Mismatch on value casting : Line No. " + str(p.lineno(1))+bcolors.ENDC)
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Cannot perform casting at line "
+                    + str(p.lineno(1))
+                    + bcolors.ENDC
+                )
+                return
+            temp_type_list = []
+            temp2_type_list = []
+            for single_type in p[2].type:
+                if len(single_type) > 0 and single_type != "*":
+                    temp_type_list.append(single_type)
+                    if single_type[0] != "[" or single_type[-1] != "]":
+                        temp2_type_list.append(single_type)
+                if (
+                    len(single_type) > 0
+                    and single_type[0] == "["
+                    and single_type[-1] == "]"
+                ):
+                    if single_type[1:-1] == "":
+                        self.symtab.error = 1
+                        print(
+                            bcolors.FAIL
+                            + "Cannot have empty indices for array declarations at line "
+                            + str(p.lineno(1))
+                            + bcolors.ENDC
+                        )
+                        return
+                    elif int(single_type[1:-1]) <= 0:
+                        self.symtab.error = 1
+                        print(
+                            bcolors.FAIL
+                            + "Cannot have non-positive integers for array declarations at line "
+                            + str(p.lineno(1))
+                            + bcolors.ENDC
+                        )
+                        return
+            if len(temp2_type_list) != len(set(temp2_type_list)):
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "variables cannot have duplicating type of declarations at line "
+                    + str(p.lineno(1))
+                    + bcolors.ENDC
+                )
+                return
+            if "unsigned" in p[2].type and "signed" in p[2].type:
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Variable cannot be both signed and unsigned at line "
+                    + str(p.lineno(1))
+                    + bcolors.ENDC
+                )
+                return
+            else:
+                data_type_count = 0
+                if p[2].type is None:
+                    p[2].type = []
+                if (
+                    "int" in p[2].type
+                    or "short" in p[2].type
+                    or "unsigned" in p[2].type
+                    or "signed" in p[2].type
+                ):
+                    data_type_count += 1
+                if "char" in p[2].type:
+                    data_type_count += 1
+                if "bool" in p[2].type:
+                    data_type_count += 1
+                if "float" in p[2].type:
+                    data_type_count += 1
+                if "void" in p[2].type:
+                    data_type_count += 1
+                if "struct" in p[2].type:
+                    data_type_count += 1
+                if "union" in p[2].type:
+                    data_type_count += 1
+                if data_type_count > 1:
+                    self.symtab.error = 1
+                    print(
+                        bcolors.FAIL
+                        + "Two or more conflicting data types specified for variable at line "
+                        + str(p.lineno(1))
+                        + bcolors.ENDC
+                    )
+                    return
 
+            isarr = 0
+            for i in range(len(p[2].type)):
+                if (
+                    len(p[2].type[i]) > 0
+                    and p[2].type[i][0] == "["
+                    and p[2].type[i][-1] == "]"
+                ):
+                    isarr += 1
+
+            type_list = p[2].type
+            if type_list is None:
+                type_list = []
+            p[0].type = []
+
+            if "unsigned" in type_list or "signed" in type_list:
+                if (
+                    "bool" not in type_list
+                    and "char" not in type_list
+                    and "short" not in type_list
+                ):
+                    type_list.append("int")
+
+            if "int" in type_list:
+                p[0].type.append("int")
+                for single_type in type_list:
+                    if single_type != "int":
+                        p[0].type.append(single_type)
+
+            elif "short" in type_list:
+                p[0].type.append("short")
+                for single_type in type_list:
+                    if single_type != "short":
+                        p[0].type.append(single_type)
+
+            elif "char" in type_list:
+                p[0].type.append("char")
+                for single_type in type_list:
+                    if single_type != "char":
+                        p[0].type.append(single_type)
+
+            elif "bool" in type_list:
+                p[0].type.append("bool")
+                for single_type in type_list:
+                    if single_type != "bool":
+                        p[0].type.append(single_type)
+
+            elif "str" in type_list:
+                p[0].type.append("str")
+                for single_type in type_list:
+                    if single_type != "str":
+                        p[0].type.append(single_type)
+
+            elif "float" in type_list:
+                p[0].type.append("float")
+                for single_type in type_list:
+                    if single_type != "float":
+                        p[0].type.append(single_type)
+
+            if "struct" in type_list:
+                p[0].type.append("struct")
+                for single_type in type_list:
+                    if single_type != "struct":
+                        p[0].type.append(single_type)
+
+            if "union" in type_list:
+                p[0].type.append("union")
+                for single_type in type_list:
+                    if single_type != "union":
+                        p[0].type.append(single_type)
+            if isarr > 0:
+                temp_type = []
+                temp_type.append(p[0].type[0])
+                for i in range(isarr):
+                    temp_type[0] += " *"
+                for i in range(len(p[0].type)):
+                    if i > isarr:
+                        temp_type.append(p[0].type[i])
+                p[0].type = temp_type
+                p[0].type.append("arr")
+                for i in range(len(type_list)):
+                    if (
+                        type_list[len(type_list) - i - 1][0] == "["
+                        and type_list[len(type_list) - i - 1][-1] == "]"
+                    ):
+                        p[0].type.append(type_list[len(type_list) - i - 1])
+
+            if "void" in type_list:
+                p[0].type.append("void")
+                for single_type in type_list:
+                    if single_type != "void":
+                        p[0].type.append(single_type)
+
+            if "*" in type_list:
+                temp_type = []
+                temp_type.append(p[0].type[0])
+                for i in range(1, len(p[0].type)):
+                    if p[0].type[i] == "*":
+                        temp_type[0] += " *"
+                    else:
+                        temp_type.append(p[0].type[i])
+                p[0].type = temp_type
+
+            if p[2].type is None or p[4].type is None or p[0].type is None:
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Cannot perform casting at line "
+                    + str(p.lineno(1))
+                    + bcolors.ENDC
+                )
             elif (
-                p[4].type[0] not in ["bool", "char", "short", "int"]
-                and "*" in p[2].type
+                "struct" in p[2].type
+                and "*" not in p[2].type
+                and "struct" not in p[4].type
             ):
-                self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Incompatible casting between "
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Cannot cast non-struct value "
                     + str(p[4].type)
-                    + " and pointer at Line No.:"
-                    + str(p.lineno(1))+bcolors.ENDC
+                    + " to struct type "
+                    + str(p[2].type)
+                    + " at line "
+                    + str(p.lineno(1))
+                    + bcolors.ENDC
                 )
 
-        elif len(p) == 2:
-            p[0] = p[1]
+            elif (
+                "struct" in p[2].type
+                and "struct" in p[4].type
+                and p[4].type[1] not in p[2].type
+            ):
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Incompatible struct types to perform casting at line "
+                    + str(p.lineno(1))
+                    + bcolors.ENDC
+                )
+
+            elif (
+                "union" in p[2].type
+                and "*" not in p[2].type
+                and "union" not in p[4].type
+            ):
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Cannot cast non-union value "
+                    + str(p[4].type)
+                    + " to union type "
+                    + str(p[2].type)
+                    + " at line "
+                    + str(p.lineno(1))
+                    + bcolors.ENDC
+                )
+
+            elif (
+                "union" in p[2].type
+                and "union" in p[4].type
+                and p[4].type[1] not in p[2].type
+            ):
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Incompatible union types to perform casting at line "
+                    + str(p.lineno(1))
+                    + bcolors.ENDC
+                )
+
+            elif (
+                p[0].type[0] in ["bool", "char", "short", "int", "float"]
+                and p[4].type[0] not in ["bool", "char", "short", "int", "float"]
+                and p[4].type[0][-1] != "*"
+            ):
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Type mismatch while casting value at line "
+                    + str(p.lineno(1))
+                    + bcolors.ENDC
+                )
+
+            elif (
+                "*" in p[2].type
+                and p[4].type[0] not in ["bool", "char", "short", "int"]
+                and p[4].type[0][-1] != "*"
+            ):
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Incompatible casting between pointer and "
+                    + str(p[4].type)
+                    + " at line "
+                    + str(p.lineno(1))
+                    + bcolors.ENDC
+                )
+            p[4].totype = p[0].type
+
+            if self.symtab.error:
+                return
+
+            p[0].temp = self.three_address_code.create_temp_var()
+            self.symtab.insert_symbol(p[0].temp, 0)
+            self.symtab.modify_symbol(p[0].temp, "data_type", p[0].type)
+            self.symtab.modify_symbol(p[0].temp, "identifier_type", "TEMP")
+            self.symtab_size_update(p[0].type, p[0].temp)
+            if self.symtab.is_global(p[0].temp):
+                self.symtab.modify_symbol(p[0].temp, "variable_scope", "Global")
+            else:
+                self.symtab.modify_symbol(p[0].temp, "variable_scope", "Local")
+                found, entry = self.symtab.return_sym_tab_entry(p[0].temp)
+                var_size = found["allocated_size"]
+                if found["variable_scope"] == "Local":
+                    if found["offset"] > 0:
+                        self.symtab.modify_symbol(
+                            p[0].temp,
+                            "temp",
+                            f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                        )
+                    else:
+                        self.symtab.modify_symbol(
+                            p[0].temp,
+                            "temp",
+                            f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                        )
+                p[0].temp = found["temp"]
+
+            currtype = []
+            for single_type in p[4].type:
+                if (
+                    single_type != "arr"
+                    and single_type[0] != "["
+                    and single_type[-1] != "]"
+                ):
+                    currtype.append(single_type)
+            cstr = "," + " ".join(currtype).replace(" ", "_")
+            self.three_address_code.emit(
+                "cast",
+                p[0].temp,
+                p[4].temp,
+                " ".join(p[4].totype).replace(" ", "_") + cstr,
+            )
+            p[0].true_list.append(self.three_address_code.next_statement)
+            p[0].false_list.append(self.three_address_code.next_statement + 1)
+            self.three_address_code.emit("ifnz goto", "", p[0].temp, "")
+            self.three_address_code.emit("goto", "", "", "")
 
     def p_multiplicative_expression(self, p):
         """
@@ -1074,64 +3016,263 @@ class Parser:
         if len(p) == 2:
             p[0] = p[1]
         elif len(p) == 4:
-            p[0] = Node(str(p[2]), [p[1], p[3]])
-
-            if p[1].type == None or p[3].type == None:
-                self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Unable to multiply the two expressions at Line No.: "
-                    + str(p.lineno(2))+bcolors.ENDC
+            if (
+                p[1] is None
+                or p[3] is None
+                or p[1].type is None
+                or p[3].type is None
+                or p[1].type == []
+                or p[3].type == []
+            ):
+                self.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Unable to multiply the two expressions at Line No.: "
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
                 )
 
-            elif p[1].type[0] in ["short", "int", "float"] and p[3].type[0] in [
-                "short",
-                "int",
-                "float",
-            ]:
-                temp_list = ["short", "int", "float"]
-                p[0].type = []
-                p[0].type.append(
-                    temp_list[
+            elif str(p[2]) == "%":
+                if p[1].type[0] not in ["bool", "char", "short", "int"] or p[3].type[
+                    0
+                ] not in ["bool", "char", "short", "int"]:
+                    self.symtab.error = 1
+                    print(
+                        bcolors.FAIL
+                        + "Cannot perform modulo operation between expressions of type {p[1].type} and {p[3].type} only line {p.lineno(2)}"
+                        + bcolors.ENDC
+                    )
+
+                    return
+                p0type = ["int"]
+                if "unsigned" in p[1].type or "unsigned" in p[3].type:
+                    p0type.append("unsigned")
+                p0typestr = "to"
+                for single_type in p0type:
+                    p0typestr += "_" + single_type
+                p0typestr = p0typestr.replace(" ", "_")
+
+                flag = True
+                for i in p0type:
+                    if i not in p[1].type:
+                        flag = False
+                if flag == False:
+                    p[1].totype = p0type
+                    p1 = Node(p0typestr, [p[1]])
+                else:
+                    p1 = p[1]
+
+                flag = True
+                for i in p0type:
+                    if i not in p[3].type:
+                        flag = False
+                if flag == False:
+                    p[3].totype = p0type
+                    p3 = Node(p0typestr, [p[3]])
+                else:
+                    p3 = p[3]
+
+                p[0] = Node(str(p[2]), [p1, p3])
+                p[0].type = p0type
+
+                p[0].label = p[0].label + "_" + p[0].type[0]
+
+                if len(p[0].type) == 2:
+                    p[0].label = p[0].label + "_" + p[0].type[1]
+
+                p[0].label = p[0].label.replace(" ", "_")
+
+                p[0].node.attr["label"] = p[0].label
+
+            elif (
+                len(p[1].type) > 0
+                and p[1].type[0] in ["bool", "char", "short", "int", "float"]
+                and len(p[3].type) > 0
+                and p[3].type[0] in ["bool", "char", "short", "int", "float"]
+            ):
+                p0type = []
+                p0type.append(
+                    ["bool", "char", "short", "int", "float"][
                         max(
-                            temp_list.index(p[1].type[0]), temp_list.index(p[3].type[0])
+                            ["bool", "char", "short", "int", "float"].index(
+                                p[1].type[0]
+                            ),
+                            ["bool", "char", "short", "int", "float"].index(
+                                p[3].type[0]
+                            ),
                         )
                     ]
                 )
                 if ("unsigned" in p[1].type or "unsigned" in p[3].type) and max(
-                    temp_list.index(p[1].type[0]), temp_list.index(p[3].type[0])
-                ) <= 1:
-                    p[0].type.append("unsigned")
+                    ["bool", "char", "short", "int", "float"].index(p[1].type[0]),
+                    ["bool", "char", "short", "int", "float"].index(p[3].type[0]),
+                ) <= 4:
+                    p0type.append("unsigned")
+                p0typestr = "to"
+                for single_type in p0type:
+                    p0typestr += "_" + single_type
+                p0typestr = p0typestr.replace(" ", "_")
 
-                flag = True
-                for i in p[0].type:
-                    if i not in p[1].type:
-                        flag = False
-                if flag == False:
-                    p[1].totype = p[0].type
+                isIn = True
+                for single_type in p0type:
+                    if single_type not in p[1].type:
+                        isIn = False
+                if isIn == False:
+                    p[1].totype = p0type
+                    p1 = Node(p0typestr, [p[1]])
+                else:
+                    p1 = p[1]
+                isIn = True
+                for single_type in p0type:
+                    if single_type not in p[3].type:
+                        isIn = False
+                if isIn == False:
+                    p[3].totype = p0type
+                    p3 = Node(p0typestr, [p[3]])
+                else:
+                    p3 = p[3]
+                p[0] = Node(str(p[2]), [p1, p3])
+                p[0].type = p0type
 
-                flag = True
-                for i in p[0].type:
-                    if i not in p[3].type:
-                        flag = False
-                if flag == False:
-                    p[3].totype = p[0].type
-
-                p[0].label = p[0].label + p[0].type[0]
+                p[0].label = p[0].label + "_" + p[0].type[0]
                 if len(p[0].type) == 2:
-                    p[0].label = p[0].label + " " + p[0].type[1]
-
+                    p[0].label = p[0].label + "_" + p[0].type[1]
+                p[0].label = p[0].label.replace(" ", "_")
                 p[0].node.attr["label"] = p[0].label
 
             else:
                 self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Unable to multiply two incompatible type of expressions ("
+                print(
+                    bcolors.FAIL
+                    + "Unable to multiply two incompatible type of expressions ("
                     + str(p[1].type)
                     + " and "
                     + str(p[3].type)
                     + ") at Line No.: "
-                    + str(p.lineno(2))+bcolors.ENDC
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
                 )
+
+            if self.symtab.error:
+                return
+            if p[1].totype is not None and p[1].totype != p[1].type:
+                p1.temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p1.temp, 0)
+                self.symtab.modify_symbol(p1.temp, "data_type", p[1].totype)
+                self.symtab.modify_symbol(p1.temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[1].totype, p1.temp)
+                if self.symtab.is_global(p1.temp):
+                    self.symtab.modify_symbol(p1.temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p1.temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p1.temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p1.temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p1.temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p1.temp = found["temp"]
+
+                currtype = []
+                for single_type in p[1].type:
+                    if (
+                        single_type != "arr"
+                        and single_type[0] != "["
+                        and single_type[-1] != "]"
+                    ):
+                        currtype.append(single_type)
+                cstr = "," + " ".join(currtype).replace(" ", "_")
+                self.three_address_code.emit(
+                    "cast",
+                    p1.temp,
+                    p[1].temp,
+                    " ".join(p[1].totype).replace(" ", "_") + cstr,
+                )
+            else:
+                p1.temp = p[1].temp
+            if p[3].totype is not None and p[3].totype != p[3].type:
+                p3.temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p3.temp, 0)
+                self.symtab.modify_symbol(p3.temp, "data_type", p[3].totype)
+                self.symtab.modify_symbol(p3.temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[3].totype, p3.temp)
+                if self.symtab.is_global(p3.temp):
+                    self.symtab.modify_symbol(p3.temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p3.temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p3.temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p3.temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p3.temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p3.temp = found["temp"]
+                currtype = []
+                for single_type in p[3].type:
+                    if (
+                        single_type != "arr"
+                        and single_type[0] != "["
+                        and single_type[-1] != "]"
+                    ):
+                        currtype.append(single_type)
+                cstr = "," + " ".join(currtype).replace(" ", "_")
+                self.three_address_code.emit(
+                    "cast",
+                    p3.temp,
+                    p[3].temp,
+                    " ".join(p[3].totype).replace(" ", "_") + cstr,
+                )
+            else:
+                p3.temp = p[3].temp
+
+            p[0].temp = self.three_address_code.create_temp_var()
+            self.symtab.insert_symbol(p[0].temp, 0)
+            self.symtab.modify_symbol(p[0].temp, "data_type", p[0].type)
+            self.symtab.modify_symbol(p[0].temp, "identifier_type", "TEMP")
+            self.symtab_size_update(p[0].type, p[0].temp)
+            if self.symtab.is_global(p[0].temp):
+                self.symtab.modify_symbol(p[0].temp, "variable_scope", "Global")
+            else:
+                self.symtab.modify_symbol(p[0].temp, "variable_scope", "Local")
+                found, entry = self.symtab.return_sym_tab_entry(p[0].temp)
+                var_size = found["allocated_size"]
+                if found["variable_scope"] == "Local":
+                    if found["offset"] > 0:
+                        self.symtab.modify_symbol(
+                            p[0].temp,
+                            "temp",
+                            f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                        )
+                    else:
+                        self.symtab.modify_symbol(
+                            p[0].temp,
+                            "temp",
+                            f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                        )
+                p[0].temp = found["temp"]
+            self.three_address_code.emit(p[0].label, p[0].temp, p1.temp, p3.temp)
+            p[0].true_list.append(self.three_address_code.next_statement)
+            p[0].false_list.append(self.three_address_code.next_statement + 1)
+            self.three_address_code.emit("ifnz goto", "", p[0].temp, "")
+            self.three_address_code.emit("goto", "", "", "")
 
     def p_additive_expression(self, p):
         """
@@ -1146,15 +3287,29 @@ class Parser:
         if len(p) == 2:
             p[0] = p[1]
         elif len(p) == 4:
-            p[0] = Node(str(p[2]), [p[1], p[3]])
-
-            if p[1].type == None or p[3].type == None:
-                self.symtab.error = True
-                print(bcolors.FAIL+"Unable to add the expressions on Line No.: " + str(p.lineno(2))+bcolors.ENDC)
-
-            elif p[1].type[0] in temp_list_aa and p[3].type[0] in temp_list_aa:
-                p[0].type = []
-                p[0].type.append(
+            if (
+                p[1] is None
+                or p[3] is None
+                or p[1].type is None
+                or p[3].type is None
+                or p[1].type == []
+                or p[3].type == []
+            ):
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Cannot perform additive operation between expressions on line"
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
+                )
+            elif (
+                len(p[1].type) > 0
+                and p[1].type[0] in ["bool", "char", "short", "int", "float"]
+                and len(p[3].type) > 0
+                and p[3].type[0] in temp_list_aa
+            ):
+                p0type = []
+                p0type.append(
                     temp_list_aa[
                         max(
                             temp_list_aa.index(p[1].type[0]),
@@ -1162,69 +3317,226 @@ class Parser:
                         )
                     ]
                 )
+
                 if ("unsigned" in p[1].type or "unsigned" in p[3].type) and max(
                     temp_list_aa.index(p[1].type[0]), temp_list_aa.index(p[3].type[0])
                 ) <= 2:
-                    p[0].type.append("unsigned")
+                    p0type.append("unsigned")
+
+                p0typestr = "to"
+                for single_type in p0type:
+                    p0typestr += "_" + single_type
+
+                p0typestr = p0typestr.replace(" ", "_")
 
                 isIn = True
-                for single_type in p[0].type:
+                for single_type in p0type:
                     if single_type not in p[1].type:
                         isIn = False
                 if isIn == False:
-                    p[1].totype = p[0].type
+                    p[1].totype = p0type
+                    p1 = Node(p0typestr, [p[1]])
+                else:
+                    p1 = p[1]
 
                 isIn = True
-                for single_type in p[0].type:
+                for single_type in p0type:
                     if single_type not in p[3].type:
                         isIn = False
                 if isIn == False:
-                    p[3].totype = p[0].type
+                    p[3].totype = p0type
+                    p3 = Node(p0typestr, [p[3]])
+                else:
+                    p3 = p[3]
 
-                p[0].label = p[0].label + p[0].type[0]
+                p[0] = Node(str(p[2]), [p1, p3])
+                p[0].type = p0type
+                p[0].label = p[0].label + "_" + p[0].type[0]
+
                 if len(p[0].type) == 2:
-                    p[0].label = p[0].label + " " + p[0].type[1]
+                    p[0].label = p[0].label + "_" + p[0].type[1]
+                p[0].label = p[0].label.replace(" ", "_")
 
                 p[0].node.attr["label"] = p[0].label
-
-            elif p[1].type[0][-1] == "*" and p[3].type[0] in temp_list_ii:
-                p[0].label = p[0].label + p[1].type[0]
-                p[0].node.attr["label"] = p[0].label
-                p[0].type = p[1].type
 
             elif (
-                p[3].type[0][-1] == "*"
-                and p[1].type[0] in temp_list_ii
-                and p[0].label == "+"
-            ):
-                p[0].label = p[0].label + p[1].type[0]
-                p[0].node.attr["label"] = p[0].label
-                p[0].type = p[3].type
-
-            elif (
-                p[3].type[0][-1] == "*"
-                and p[1].type[0] in temp_list_ii
-                and p[0].label == "-"
+                len(p[1].type) > 0
+                and p[1].type[0][-1] == "*"
+                and len(p[3].type) > 0
+                and p[3].type[0] in temp_list_ii
             ):
                 self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Invalid Operation of Binary - performed between the incompatible types "
-                    + str(p[1].type)
-                    + " and "
-                    + str(p[3].type)
-                    + " on Line No.: "
-                    + str(p.lineno(2))+bcolors.ENDC
+                print(
+                    bcolors.FAIL
+                    + "Pointer Arithmetic Not allowed at line "
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
+                )
+            elif (
+                len(p[3].type) > 0
+                and p[3].type[0][-1] == "*"
+                and len(p[1].type) > 0
+                and p[1].type[0] in ["bool", "char", "short", "int"]
+                and str(p[2]) == "+"
+            ):
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Pointer Arithmetic Not allowed at line "
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
+                )
+
+            elif (
+                len(p[3].type) > 0
+                and p[3].type[0][-1] == "*"
+                and len(p[1].type) > 0
+                and p[1].type[0] in temp_list_ii
+                and str(p[2]) == "-"
+            ):
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Invalid binary - operation between incompatible types {p[1].type} and {p[3].type} on line {p.lineno(2)}"
+                    + bcolors.ENDC
                 )
 
             else:
                 self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Unable to add two incompatible type of expressions ( "
+                print(
+                    bcolors.FAIL
+                    + "Unable to add two incompatible type of expressions ( "
                     + str(p[1].type)
                     + " and "
                     + str(p[3].type)
-                    + " ) "+bcolors.ENDC
+                    + " ) "
+                    + bcolors.ENDC
                 )
+
+            if self.symtab.error:
+                return
+
+            if p[1].totype is not None and p[1].totype != p[1].type:
+                p1.temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p1.temp, 0)
+                self.symtab.modify_symbol(p1.temp, "data_type", p[1].totype)
+                self.symtab.modify_symbol(p1.temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[1].totype, p1.temp)
+                if self.symtab.is_global(p1.temp):
+                    self.symtab.modify_symbol(p1.temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p1.temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p1.temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p1.temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p1.temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p1.temp = found["temp"]
+                currtype = []
+                for single_type in p[1].type:
+                    if (
+                        single_type != "arr"
+                        and single_type[0] != "["
+                        and single_type[-1] != "]"
+                    ):
+                        currtype.append(single_type)
+                cstr = "," + " ".join(currtype).replace(" ", "_")
+                self.three_address_code.emit(
+                    "cast",
+                    p1.temp,
+                    p[1].temp,
+                    " ".join(p[1].totype).replace(" ", "_") + cstr,
+                )
+            else:
+                p1.temp = p[1].temp
+            if p[3].totype is not None and p[3].totype != p[3].type:
+                p3.temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p3.temp, 0)
+                self.symtab.modify_symbol(p3.temp, "data_type", p[3].totype)
+                self.symtab.modify_symbol(p3.temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[3].totype, p3.temp)
+                if self.symtab.is_global(p3.temp):
+                    self.symtab.modify_symbol(p3.temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p3.temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p3.temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p3.temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p3.temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p3.temp = found["temp"]
+                currtype = []
+                for single_type in p[3].type:
+                    if (
+                        single_type != "arr"
+                        and single_type[0] != "["
+                        and single_type[-1] != "]"
+                    ):
+                        currtype.append(single_type)
+                cstr = "," + " ".join(currtype).replace(" ", "_")
+                self.three_address_code.emit(
+                    "cast",
+                    p3.temp,
+                    p[3].temp,
+                    " ".join(p[3].totype).replace(" ", "_") + cstr,
+                )
+            else:
+                p3.temp = p[3].temp
+
+            p[0].temp = self.three_address_code.create_temp_var()
+            self.symtab.insert_symbol(p[0].temp, 0)
+            self.symtab.modify_symbol(p[0].temp, "data_type", p[0].type)
+            self.symtab.modify_symbol(p[0].temp, "identifier_type", "TEMP")
+            self.symtab_size_update(p[0].type, p[0].temp)
+            if self.symtab.is_global(p[0].temp):
+                self.symtab.modify_symbol(p[0].temp, "variable_scope", "Global")
+            else:
+                self.symtab.modify_symbol(p[0].temp, "variable_scope", "Local")
+                found, entry = self.symtab.return_sym_tab_entry(p[0].temp)
+                var_size = found["allocated_size"]
+                if found["variable_scope"] == "Local":
+
+                    if found["offset"] > 0:
+                        self.symtab.modify_symbol(
+                            p[0].temp,
+                            "temp",
+                            f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                        )
+                    else:
+                        self.symtab.modify_symbol(
+                            p[0].temp,
+                            "temp",
+                            f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                        )
+                p[0].temp = found["temp"]
+            self.three_address_code.emit(p[0].label, p[0].temp, p1.temp, p3.temp)
+
+            p[0].true_list.append(self.three_address_code.next_statement)
+            p[0].false_list.append(self.three_address_code.next_statement + 1)
+            self.three_address_code.emit("ifnz goto", "", p[0].temp, "")
+            self.three_address_code.emit("goto", "", "", "")
 
     def p_shift_expression(self, p):
         """
@@ -1239,46 +3551,208 @@ class Parser:
             p[0] = p[1]
 
         elif len(p) == 4:
-
-            if p[1].type == None or p[3].type == None:
+            if (
+                p[1] is None
+                or p[3] is None
+                or p[1].type is None
+                or p[3].type is None
+                or p[1].type == []
+                or p[3].type == []
+            ):
                 self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Unable to perform a bitshift operation between the expressions on Line No.: "
-                    + str(p.lineno(2))+bcolors.ENDC
+                print(
+                    bcolors.FAIL
+                    + "Unable to perform a bitshift operation between the expressions on Line No.: "
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
                 )
 
-            elif p[1].type[0] in ["char", "short", "int"] and p[3].type[0] in [
-                "char",
-                "short",
-                "int",
-            ]:
-                p[0] = Node(str(p[2]), [p[1], p[3]])
-                p[0].type = ["int"]
-                p[0].label += "int"
+            elif (
+                len(p[1].type) > 0
+                and p[1].type[0] in ["char", "short", "int"]
+                and p[3].type[0]
+                in [
+                    "char",
+                    "short",
+                    "int",
+                ]
+            ):
+                p0type = []
+                p0label = str(p[2])
+                p0typestr = "to"
+
+                p0type = ["int"]
+                p0label += "_int"
+                p0typestr += "_int"
 
                 if "unsigned" in p[1].type:
-                    p[0].type.append("unsigned")
-                    p[0].label += "unsigned"
+                    p0type.append("unsigned")
+                    p0label += "_unsigned"
+                    p0typestr += "_unsigned"
 
                 flag = True
-                for i in p[0].type:
+
+                for i in p0type:
                     if i not in p[1].type:
                         flag = False
                 if flag == False:
-                    p[1].totype = p[0].type
+                    p[1].totype = p0type
+                    p1 = Node(p0typestr, [p[1]])
+                else:
+                    p1 = p[1]
+
+                isin = True
+                for single_type in p0type:
+                    if single_type not in p[3].type:
+                        isin = False
+                if isin == False:
+                    p[3].totype = p0type
+                    p3 = Node(p0typestr, [p[3]])
+                else:
+                    p3 = p[3]
+
+                p[0] = Node(str(p[2]), [p1, p[3]])
+                p[0].type = p0type
+                p[0].label = p0label
+                p[0].label = p[0].label.replace(" ", "_")
 
                 p[0].node.attr["label"] = p[0].label
 
             else:
                 self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Bitshift operation failed between incompatible types "
+                print(
+                    bcolors.FAIL
+                    + "Bitshift operation failed between incompatible types "
                     + str(p[1].type)
                     + " and "
                     + str(p[3].type)
                     + " on Line No.: "
-                    + str(p.lineno(2))+bcolors.ENDC
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
                 )
+
+            if self.symtab.error:
+                return
+            if p[1].totype is not None and p[1].totype != p[1].type:
+                p1.temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p1.temp, 0)
+                self.symtab.modify_symbol(p1.temp, "data_type", p[1].totype)
+                self.symtab.modify_symbol(p1.temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[1].totype, p1.temp)
+                if self.symtab.is_global(p1.temp):
+                    self.symtab.modify_symbol(p1.temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p1.temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p1.temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p1.temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p1.temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p1.temp = found["temp"]
+                currtype = []
+                for single_type in p[1].type:
+                    if (
+                        single_type != "arr"
+                        and single_type[0] != "["
+                        and single_type[-1] != "]"
+                    ):
+                        currtype.append(single_type)
+                cstr = "," + " ".join(currtype).replace(" ", "_")
+                self.three_address_code.emit(
+                    "cast",
+                    p1.temp,
+                    p[1].temp,
+                    " ".join(p[1].totype).replace(" ", "_") + cstr,
+                )
+            else:
+                p1.temp = p[1].temp
+            if p[3].totype is not None and p[3].totype != p[3].type:
+                p3.temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p3.temp, 0)
+                self.symtab.modify_symbol(p3.temp, "data_type", p[3].totype)
+                self.symtab.modify_symbol(p3.temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[3].totype, p3.temp)
+                if self.symtab.is_global(p3.temp):
+                    self.symtab.modify_symbol(p3.temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p3.temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p3.temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p3.temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p3.temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p3.temp = found["temp"]
+                currtype = []
+                for single_type in p[3].type:
+                    if (
+                        single_type != "arr"
+                        and single_type[0] != "["
+                        and single_type[-1] != "]"
+                    ):
+                        currtype.append(single_type)
+                cstr = "," + " ".join(currtype).replace(" ", "_")
+                self.three_address_code.emit(
+                    "cast",
+                    p3.temp,
+                    p[3].temp,
+                    " ".join(p[3].totype).replace(" ", "_") + cstr,
+                )
+            else:
+                p3.temp = p[3].temp
+
+            p[0].temp = self.three_address_code.create_temp_var()
+            self.symtab.insert_symbol(p[0].temp, 0)
+            self.symtab.modify_symbol(p[0].temp, "data_type", p[0].type)
+            self.symtab.modify_symbol(p[0].temp, "identifier_type", "TEMP")
+            self.symtab_size_update(p[0].type, p[0].temp)
+            if self.symtab.is_global(p[0].temp):
+                self.symtab.modify_symbol(p[0].temp, "variable_scope", "Global")
+            else:
+                self.symtab.modify_symbol(p[0].temp, "variable_scope", "Local")
+                found, entry = self.symtab.return_sym_tab_entry(p[0].temp)
+                var_size = found["allocated_size"]
+                if found["variable_scope"] == "Local":
+
+                    if found["offset"] > 0:
+                        self.symtab.modify_symbol(
+                            p[0].temp,
+                            "temp",
+                            f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                        )
+                    else:
+                        self.symtab.modify_symbol(
+                            p[0].temp,
+                            "temp",
+                            f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                        )
+                p[0].temp = found["temp"]
+            self.three_address_code.emit(p[0].label, p[0].temp, p1.temp, p3.temp)
+            p[0].true_list.append(self.three_address_code.next_statement)
+            p[0].false_list.append(self.three_address_code.next_statement + 1)
+            self.three_address_code.emit("ifnz goto", "", p[0].temp, "")
+            self.three_address_code.emit("goto", "", "", "")
 
     def p_relational_expression(self, p):
         """
@@ -1296,89 +3770,286 @@ class Parser:
         elif len(p) == 4:
 
             temp_list = ["char", "short", "int", "float"]
-            if p[1].type == None or p[3].type == None:
+            if (
+                p[1] is None
+                or p[3] is None
+                or p[1].type is None
+                or p[3].type is None
+                or p[1].type == []
+                or p[3].type == []
+            ):
                 self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Unable to perform relational operation between the expressions on Line No.: "
-                    + str(p.lineno(2))+bcolors.ENDC
+                print(
+                    bcolors.FAIL
+                    + "Unable to perform relational operation between the expressions on Line No.: "
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
                 )
 
-            elif p[1].type[0] in temp_list and p[3].type[0] in temp_list:
+            elif (
+                len(p[1].type) > 0
+                and p[1].type[0] in temp_list
+                and len(p[3].type) > 0
+                and p[3].type[0] in temp_list
+            ):
                 p[0] = Node(str(p[2]), [p[1], p[3]])
-                p[0].type = ["int"]
+                p0type = ["int"]
                 val = max(temp_list.index(p[1].type[0]), temp_list.index(p[3].type[0]))
-                p[0].label = p[0].label + " " + temp_list[val]
+                p0label = (
+                    str(p[2])
+                    + "_"
+                    + ["bool", "char", "short", "int", "float"][
+                        max(
+                            temp_list.index(p[1].type[0]), temp_list.index(p[3].type[0])
+                        )
+                    ]
+                )
 
                 flag = 0
                 if "unsigned" in p[1].type or "unsigned" in p[3].type and val <= 2:
                     flag = 1
-                    p[0].lavel = p[0].label + "_" + "unsigned"
-                    p[0].node.attr["label"] = p[0].label
+                    p0label = p0label + "_" + "unsigned"
 
-                else:
-                    p[0].node.attr["label"] = p[0].label
+                p0label = p0label.replace(" ", "_")
+                p[1].totype = None
+                p[3].totype = None
 
                 if temp_list[val] not in p[1].type:
                     p[1].totype = [temp_list[val]]
                     if flag:
                         p[1].totype.append("unsigned")
+                elif flag and "unsigned" not in p[1].type:
+                    p[1].totype = [temp_list[val], "unsigned"]
+
+                if p[1].totype != None and p[1].totype != p[1].type:
+                    p1str = "to"
+                    for single_type in p[1].totype:
+                        p1str += "_" + single_type
+                    p1 = Node(p1str, [p[1]])
+                else:
+                    p1 = p[1]
+
                 if temp_list[val] not in p[3].type:
                     p[3].totype = [temp_list[val]]
                     if flag:
                         p[3].totype.append("unsigned")
+                elif flag and "unsigned" not in p[3].type:
+                    p[3].totype = [temp_list[val], "unsigned"]
 
-            elif p[1].type[0] == "str" and p[3].type[0] == "str":
-                p[0] = Node(str(p[2]), [p[1], p[3]])
-                p[0].type = ["int"]
-                p[0].label += "str"
+                if p[3].totype != None and p[3].totype != p[3].type:
+                    p3str = "to"
+                    for single_type in p[3].totype:
+                        p3str += "_" + single_type
+                    p3 = Node(p3str, [p[3]])
+                else:
+                    p3 = p[3]
+                p[0] = Node(str(p[2]), [p1, p3])
+                p[0].type = p0type
+                p[0].label = p0label
                 p[0].node.attr["label"] = p[0].label
 
-            elif p[1].type[0][-1] == "*" and p[3].type[0] in ["float"]:
-                self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Relational operation failed between incompatible types "
-                    + str(p[1].type)
-                    + " and "
-                    + str(p[3].type)
-                    + " on Line No.: "
-                    + str(p.lineno(2))+bcolors.ENDC
-                )
+            elif (
+                len(p[1].type) > 0
+                and p[1].type[0] == "str"
+                and len(p[3].type) > 0
+                and p[3].type[0] == "str"
+            ):
+                p[0] = Node(str(p[2]), [p[1], p[3]])
+                p[0].type = ["int"]
+                p[0].label += "_str"
+                p[0].label = p[0].label.replace(" ", "_")
+                p[0].node.attr["label"] = p[0].label
 
-            elif p[3].type[0][-1] == "*" and p[1].type[0] in ["float"]:
+            elif (
+                len(p[1].type) > 0
+                and p[1].type[0][-1] == "*"
+                and len(p[3].type) > 0
+                and p[3].type[0] in ["float"]
+            ):
                 self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Relational operation failed between incompatible types "
+                print(
+                    bcolors.FAIL
+                    + "Relational operation failed between incompatible types "
                     + str(p[1].type)
                     + " and "
                     + str(p[3].type)
                     + " on Line No.: "
-                    + str(p.lineno(2))+bcolors.ENDC
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
                 )
 
             elif (
-                (p[1].type[0][-1] == "*" or p[3].type[0][-1] == "*")
+                len(p[1].type) > 0
+                and p[3].type[0][-1] == "*"
+                and len(p[3].type) > 0
+                and p[1].type[0] in ["float"]
+            ):
+                self.symtab.error = True
+                print(
+                    bcolors.FAIL
+                    + "Relational operation failed between incompatible types "
+                    + str(p[1].type)
+                    + " and "
+                    + str(p[3].type)
+                    + " on Line No.: "
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
+                )
+
+            elif (
+                (
+                    (len(p[3].type) > 0 and p[1].type[0][-1] == "*")
+                    or (len(p[3].type) > 0 and p[3].type[0][-1] == "*")
+                )
                 and "struct" not in p[1].type
                 and "union" not in p[1].type
                 and "struct" not in p[3].type
                 and "union" not in p[3].type
             ):
-                p[0] = Node(str(p[2]), [p[1], p[3]])
-                p[0].type = ["int"]
-                p[0].label += "*"
-                p[0].node.attr["label"] = p[0].label
                 p[1].totype = ["int", "unsigned"]
+                p1 = Node("to_int_unsigned", [p[1]])
                 p[3].totype = ["int", "unsigned"]
+                p3 = Node("to_int_unsigned", [p[3]])
+                p[0] = Node(str(p[2]), [p1, p3])
+                p[0].type = ["int"]
+                p[0].label += "_*"
+                p[0].label = p[0].label.replace(" ", "_")
+                p[0].node.attr["label"] = p[0].label
 
             else:
                 self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Relational operation failed between incompatible types "
+                print(
+                    bcolors.FAIL
+                    + "Relational operation failed between incompatible types "
                     + str(p[1].type)
                     + " and "
                     + str(p[3].type)
                     + " on Line No.: "
-                    + str(p.lineno(2))+bcolors.ENDC
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
                 )
+            if self.symtab.error:
+                return
+            if p[1].totype is not None and p[1].totype != p[1].type:
+                p1.temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p1.temp, 0)
+                self.symtab.modify_symbol(p1.temp, "data_type", p[1].totype)
+                self.symtab.modify_symbol(p1.temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[1].totype, p1.temp)
+                if self.symtab.is_global(p1.temp):
+                    self.symtab.modify_symbol(p1.temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p1.temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p1.temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p1.temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p1.temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p1.temp = found["temp"]
+                currtype = []
+                for single_type in p[1].type:
+                    if (
+                        single_type != "arr"
+                        and single_type[0] != "["
+                        and single_type[-1] != "]"
+                    ):
+                        currtype.append(single_type)
+                cstr = "," + " ".join(currtype).replace(" ", "_")
+                self.three_address_code.emit(
+                    "cast",
+                    p1.temp,
+                    p[1].temp,
+                    " ".join(p[1].totype).replace(" ", "_") + cstr,
+                )
+            else:
+                p1.temp = p[1].temp
+            if p[3].totype is not None and p[3].totype != p[3].type:
+                p3.temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p3.temp, 0)
+                self.symtab.modify_symbol(p3.temp, "data_type", p[3].totype)
+                self.symtab.modify_symbol(p3.temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[3].totype, p3.temp)
+                if self.symtab.is_global(p3.temp):
+                    self.symtab.modify_symbol(p3.temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p3.temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p3.temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p3.temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p3.temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p3.temp = found["temp"]
+                currtype = []
+                for single_type in p[3].type:
+                    if (
+                        single_type != "arr"
+                        and single_type[0] != "["
+                        and single_type[-1] != "]"
+                    ):
+                        currtype.append(single_type)
+                cstr = "," + " ".join(currtype).replace(" ", "_")
+                self.three_address_code.emit(
+                    "cast",
+                    p3.temp,
+                    p[3].temp,
+                    " ".join(p[3].totype).replace(" ", "_") + cstr,
+                )
+            else:
+                p3.temp = p[3].temp
+
+            p[0].temp = self.three_address_code.create_temp_var()
+            self.symtab.insert_symbol(p[0].temp, 0)
+            self.symtab.modify_symbol(p[0].temp, "data_type", p[0].type)
+            self.symtab.modify_symbol(p[0].temp, "identifier_type", "TEMP")
+            self.symtab_size_update(p[0].type, p[0].temp)
+            if self.symtab.is_global(p[0].temp):
+                self.symtab.modify_symbol(p[0].temp, "variable_scope", "Global")
+            else:
+                self.symtab.modify_symbol(p[0].temp, "variable_scope", "Local")
+                found, entry = self.symtab.return_sym_tab_entry(p[0].temp)
+                var_size = found["allocated_size"]
+                if found["variable_scope"] == "Local":
+
+                    if found["offset"] > 0:
+                        self.symtab.modify_symbol(
+                            p[0].temp,
+                            "temp",
+                            f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                        )
+                    else:
+                        self.symtab.modify_symbol(
+                            p[0].temp,
+                            "temp",
+                            f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                        )
+                p[0].temp = found["temp"]
+            self.three_address_code.emit(p[0].label, p[0].temp, p1.temp, p3.temp)
+            p[0].true_list.append(self.three_address_code.next_statement)
+            p[0].false_list.append(self.three_address_code.next_statement + 1)
+            self.three_address_code.emit("ifnz goto", "", p[0].temp, "")
+            self.three_address_code.emit("goto", "", "", "")
 
     def p_equality_expression(self, p):
         """
@@ -1394,18 +4065,339 @@ class Parser:
 
             temp_list_a = ["char", "short", "int", "float"]
 
-            if p[1].type == None or p[3].type == None:
+            if (
+                p[1] is None
+                or p[3] is None
+                or p[1].type is None
+                or p[3].type is None
+                or p[1].type == []
+                or p[3].type == []
+            ):
                 self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Can't perform check of equality operation between the expressions at Line No.: "
-                    + str(p.lineno(1))+bcolors.ENDC
+                print(
+                    bcolors.FAIL
+                    + "Can't perform check of equality operation between the expressions at Line No.: "
+                    + str(p.lineno(1))
+                    + bcolors.ENDC
                 )
 
-            elif p[1].type[0] in temp_list_a and p[3].type[0] in temp_list_a:
-                labell = str(p[2])
-                chd = [p[1], p[3]]
-                p[0] = Node(labell, chd)
+            elif (
+                len(p[1].type) > 0
+                and p[1].type[0] in temp_list_a
+                and len(p[3].type) > 0
+                and p[3].type[0] in temp_list_a
+            ):
+                p0type = ["int"]
+                p0label = (
+                    str(p[2])
+                    + "_"
+                    + temp_list_a[
+                        max(
+                            temp_list_a.index(p[1].type[0]),
+                            temp_list_a.index(p[3].type[0]),
+                        )
+                    ]
+                )
+
+                flag = 0
+                if (
+                    "unsigned" in p[1].type
+                    or "unsigned" in p[3].type
+                    and max(
+                        temp_list_a.index(p[1].type[0]), temp_list_a.index(p[3].type[0])
+                    )
+                    > 0
+                    and max(
+                        temp_list_a.index(p[1].type[0]), temp_list_a.index(p[3].type[0])
+                    )
+                    < 5
+                ):
+                    flag = 1
+                    p0label = p0label + "_" + "unsigned"
+
+                p0label = p0label.replace(" ", "_")
+                p[1].totype = None
+                p[3].totype = None
+
+                if (
+                    temp_list_a[
+                        max(
+                            temp_list_a.index(p[1].type[0]),
+                            temp_list_a.index(p[3].type[0]),
+                        )
+                    ]
+                    not in p[1].type
+                ):
+                    p[1].totype = [
+                        temp_list_a[
+                            max(
+                                temp_list_a.index(p[1].type[0]),
+                                temp_list_a.index(p[3].type[0]),
+                            )
+                        ]
+                    ]
+                    if flag:
+                        p[1].totype.append("unsigned")
+                elif flag and "unsigned" not in p[1].type:
+                    p[1].totype = [
+                        temp_list_a[
+                            max(
+                                temp_list_a.index(p[1].type[0]),
+                                temp_list_a.index(p[3].type[0]),
+                            )
+                        ],
+                        "unsigned",
+                    ]
+
+                if p[1].totype != None and p[1].totype != p[1].type:
+                    p1str = "to"
+                    for single_type in p[1].totype:
+                        p1str += "_" + single_type
+                    p1 = Node(p1str, [p[1]])
+                else:
+                    p1 = p[1]
+
+                if (
+                    temp_list_a[
+                        max(
+                            temp_list_a.index(p[1].type[0]),
+                            temp_list_a.index(p[3].type[0]),
+                        )
+                    ]
+                    not in p[3].type
+                ):
+                    p[3].totype = [
+                        temp_list_a[
+                            max(
+                                temp_list_a.index(p[1].type[0]),
+                                temp_list_a.index(p[3].type[0]),
+                            )
+                        ]
+                    ]
+                    if flag:
+                        p[3].totype.append("unsigned")
+                elif flag and "unsigned" not in p[3].type:
+                    p[3].totype = [
+                        temp_list_a[
+                            max(
+                                temp_list_a.index(p[1].type[0]),
+                                temp_list_a.index(p[3].type[0]),
+                            )
+                        ],
+                        "unsigned",
+                    ]
+
+                if p[3].totype != None and p[3].totype != p[3].type:
+                    p3str = "to"
+                    for single_type in p[3].totype:
+                        p3str += "_" + single_type
+                    p3 = Node(p3str, [p[3]])
+                else:
+                    p3 = p[3]
+
+                p[0] = Node(str(p[2]), [p1, p3])
+                p[0].type = p0type
+                p[0].label = p0label
+                p[0].node.attr["label"] = p[0].label
+            elif (
+                len(p[1].type) > 0
+                and p[1].type[0] == "str"
+                and len(p[3].type) > 0
+                and p[3].type[0] == "str"
+            ):
+                p[0] = Node(str(p[2]), [p[1], p[3]])
                 p[0].type = ["int"]
+                p[0].label += "_str"
+                p[0].label = p[0].label.replace(" ", "_")
+                p[0].node.attr["label"] = p[0].label
+            elif (
+                len(p[1].type) > 0
+                and p[1].type[0][-1] == "*"
+                and len(p[3].type) > 0
+                and p[3].type[0] == "float"
+            ):
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Relational operation between incompatible types"
+                    + str(p[1].type)
+                    + " and "
+                    + str(p[3].type)
+                    + "on line "
+                    + str(p.lineno(1))
+                    + bcolors.ENDC
+                )
+            elif (
+                len(p[3].type) > 0
+                and p[3].type[0][-1] == "*"
+                and len(p[1].type) > 0
+                and p[1].type[0] == "float"
+            ):
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Relational operation between incompatible types"
+                    + str(p[1].type)
+                    + " and "
+                    + str(p[3].type)
+                    + "on line "
+                    + str(p.lineno(1))
+                    + bcolors.ENDC
+                )
+            elif (
+                (
+                    (len(p[1].type) > 0 and p[1].type[0][-1] == "*")
+                    or (len(p[3].type) > 0 and p[3].type[0][-1] == "*")
+                )
+                and "struct" not in p[1].type
+                and "struct" not in p[3].type
+                and "union" not in p[1].type
+                and "union" not in p[3].type
+            ):
+                p[1].totype = ["int", "unsigned"]
+                p1 = Node("to_int_unsigned", [p[1]])
+                p[3].totype = ["int", "unsigned"]
+                p3 = Node("to_int_unsigned", [p[3]])
+
+                p[0] = Node(str(p[2]), [p1, p3])
+                p[0].type = ["int"]
+                p[0].label += "_*"
+                p[0].label = p[0].label.replace(" ", "_")
+                p[0].node.attr["label"] = p[0].label
+            else:
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Equality check operation between incompatible types"
+                    + str(p[1].type)
+                    + " and "
+                    + str(p[3].type)
+                    + "on line "
+                    + str(p.lineno(1))
+                    + bcolors.ENDC
+                )
+            if self.symtab.error:
+                return
+            if p[1].totype is not None and p[1].totype != p[1].type:
+                p1.temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p1.temp, 0)
+                self.symtab.modify_symbol(p1.temp, "data_type", p[1].totype)
+                self.symtab.modify_symbol(p1.temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[1].totype, p1.temp)
+                if self.symtab.is_global(p1.temp):
+                    self.symtab.modify_symbol(p1.temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p1.temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p1.temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p1.temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p1.temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p1.temp = found["temp"]
+                currtype = []
+                for single_type in p[1].type:
+                    if (
+                        single_type != "arr"
+                        and single_type[0] != "["
+                        and single_type[-1] != "]"
+                    ):
+                        currtype.append(single_type)
+                cstr = "," + " ".join(currtype).replace(" ", "_")
+                self.three_address_code.emit(
+                    "cast",
+                    p1.temp,
+                    p[1].temp,
+                    " ".join(p[1].totype).replace(" ", "_") + cstr,
+                )
+            else:
+                p1.temp = p[1].temp
+            if p[3].totype is not None and p[3].totype != p[3].type:
+                p3.temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p3.temp, 0)
+                self.symtab.modify_symbol(p3.temp, "data_type", p[3].totype)
+                self.symtab.modify_symbol(p3.temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[3].totype, p3.temp)
+                if self.symtab.is_global(p3.temp):
+                    self.symtab.modify_symbol(p3.temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p3.temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p3.temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p3.temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p3.temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p3.temp = found["temp"]
+
+                currtype = []
+                for single_type in p[3].type:
+                    if (
+                        single_type != "arr"
+                        and single_type[0] != "["
+                        and single_type[-1] != "]"
+                    ):
+                        currtype.append(single_type)
+                cstr = "," + " ".join(currtype).replace(" ", "_")
+                self.three_address_code.emit(
+                    "cast",
+                    p3.temp,
+                    p[3].temp,
+                    " ".join(p[3].totype).replace(" ", "_") + cstr,
+                )
+            else:
+                p3.temp = p[3].temp
+            p[0].temp = self.three_address_code.create_temp_var()
+            self.symtab.insert_symbol(p[0].temp, 0)
+            self.symtab.modify_symbol(p[0].temp, "data_type", p[0].type)
+            self.symtab.modify_symbol(p[0].temp, "identifier_type", "TEMP")
+            self.symtab_size_update(p[0].type, p[0].temp)
+            if self.symtab.is_global(p[0].temp):
+                self.symtab.modify_symbol(p[0].temp, "variable_scope", "Global")
+            else:
+                self.symtab.modify_symbol(p[0].temp, "variable_scope", "Local")
+                found, entry = self.symtab.return_sym_tab_entry(p[0].temp)
+                var_size = found["allocated_size"]
+                if found["variable_scope"] == "Local":
+
+                    if found["offset"] > 0:
+                        self.symtab.modify_symbol(
+                            p[0].temp,
+                            "temp",
+                            f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                        )
+                    else:
+                        self.symtab.modify_symbol(
+                            p[0].temp,
+                            "temp",
+                            f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                        )
+                p[0].temp = found["temp"]
+            self.three_address_code.emit(p[0].label, p[0].temp, p1.temp, p3.temp)
+            p[0].true_list.append(self.three_address_code.next_statement)
+            p[0].false_list.append(self.three_address_code.next_statement + 1)
+            self.three_address_code.emit("ifnz goto", "", p[0].temp, "")
+            self.three_address_code.emit("goto", "", "", "")
 
         elif len(p) == 2:
             p[0] = p[1]
@@ -1422,17 +4414,30 @@ class Parser:
             p[0] = p[1]
 
         elif len(p) == 4:
-            if p[1].type == None or p[3].type == None:
+            if (
+                p[1] is None
+                or p[3] is None
+                or p[1].type is None
+                or p[3].type is None
+                or p[1].type == []
+                or p[3].type == []
+            ):
                 self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Unable to perform bitwise AND operation between the expressions on Line No.: "
-                    + str(p.lineno(2))+bcolors.ENDC
+                print(
+                    bcolors.FAIL
+                    + "Unable to perform bitwise AND operation between the expressions on Line No.: "
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
                 )
 
-            elif p[1].type[0] in temp_list and p[3].type[0] in temp_list:
-                p[0] = Node(str(p[2]), [p[1], p[3]])
-                p[0].type = ["int"]
-                p[0].label += "int"
+            elif (
+                len(p[1].type) > 0
+                and p[1].type[0] in temp_list
+                and len(p[3].type) > 0
+                and p[3].type[0] in temp_list
+            ):
+                p0type = ["int"]
+                p0label = str(p[2])
 
                 if "unsigned" in p[1].type or "unsigned" in p[3].type:
                     p[0].type.append("unsigned")
@@ -1440,29 +4445,171 @@ class Parser:
                 p[0].node.attr["label"] = p[0].label
 
                 flag = True
-                for i in p[0].type:
+                for i in p0type:
                     if i not in p[1].type:
                         flag = False
                 if flag == False:
-                    p[1].totype = p[0].type
+                    p[1].totype = p0type
+                    strp1 = "to_"
+                    for single_type in p[1].totype:
+                        strp1 += single_type
+                    p1 = Node(strp1, [p[1]])
+                else:
+                    p1 = p[1]
 
                 flag = True
-                for i in p[0].type:
+                for i in p0type:
                     if i not in p[3].type:
                         flag = False
                 if flag == False:
-                    p[3].totype = p[0].type
+                    p[3].totype = p0type
+                    strp3 = "to_"
+                    for single_type in p[3].totype:
+                        strp3 += single_type
+                    p3 = Node(strp3, [p[3]])
+                else:
+                    p3 = p[3]
+
+                p[0] = Node(str(p[2]), [p1, p3])
+                p[0].type = p0type
+                p[0].label = p0label
+                p[0].node.attr["label"] = p[0].label
 
             else:
                 self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Unable to perform bitwise AND operation between incompatible expression types "
+                print(
+                    bcolors.FAIL
+                    + "Unable to perform bitwise AND operation between incompatible expression types "
                     + str(p[1].type)
                     + " and "
                     + str(p[3].type)
                     + " on Line No.: "
-                    + str(p.lineno(2))+bcolors.ENDC
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
                 )
+
+            if self.symtab.error:
+                return
+            if p[1].totype is not None and p[1].totype != p[1].type:
+                p1.temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p1.temp, 0)
+                self.symtab.modify_symbol(p1.temp, "data_type", p[1].totype)
+                self.symtab.modify_symbol(p1.temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[1].totype, p1.temp)
+                if self.symtab.is_global(p1.temp):
+                    self.symtab.modify_symbol(p1.temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p1.temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p1.temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p1.temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p1.temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p1.temp = found["temp"]
+                currtype = []
+                for single_type in p[1].type:
+                    if (
+                        single_type != "arr"
+                        and single_type[0] != "["
+                        and single_type[-1] != "]"
+                    ):
+                        currtype.append(single_type)
+                cstr = "," + " ".join(currtype).replace(" ", "_")
+                self.three_address_code.emit(
+                    "cast",
+                    p1.temp,
+                    p[1].temp,
+                    " ".join(p[1].totype).replace(" ", "_") + cstr,
+                )
+            else:
+                p1.temp = p[1].temp
+            if p[3].totype is not None and p[3].totype != p[3].type:
+                p3.temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p3.temp, 0)
+                self.symtab.modify_symbol(p3.temp, "data_type", p[3].totype)
+                self.symtab.modify_symbol(p3.temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[3].totype, p3.temp)
+                if self.symtab.is_global(p3.temp):
+                    self.symtab.modify_symbol(p3.temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p3.temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p3.temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p3.temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p3.temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p3.temp = found["temp"]
+
+                currtype = []
+                for single_type in p[3].type:
+                    if (
+                        single_type != "arr"
+                        and single_type[0] != "["
+                        and single_type[-1] != "]"
+                    ):
+                        currtype.append(single_type)
+                cstr = "," + " ".join(currtype).replace(" ", "_")
+                self.three_address_code.emit(
+                    "cast",
+                    p3.temp,
+                    p[3].temp,
+                    " ".join(p[3].totype).replace(" ", "_") + cstr,
+                )
+            else:
+                p3.temp = p[3].temp
+            p[0].temp = self.three_address_code.create_temp_var()
+            self.symtab.insert_symbol(p[0].temp, 0)
+            self.symtab.modify_symbol(p[0].temp, "data_type", p[0].type)
+            self.symtab.modify_symbol(p[0].temp, "identifier_type", "TEMP")
+            self.symtab_size_update(p[0].type, p[0].temp)
+            if self.symtab.is_global(p[0].temp):
+                self.symtab.modify_symbol(p[0].temp, "variable_scope", "Global")
+            else:
+                self.symtab.modify_symbol(p[0].temp, "variable_scope", "Local")
+                found, entry = self.symtab.return_sym_tab_entry(p[0].temp)
+                var_size = found["allocated_size"]
+                if found["variable_scope"] == "Local":
+
+                    if found["offset"] > 0:
+                        self.symtab.modify_symbol(
+                            p[0].temp,
+                            "temp",
+                            f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                        )
+                    else:
+                        self.symtab.modify_symbol(
+                            p[0].temp,
+                            "temp",
+                            f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                        )
+                p[0].temp = found["temp"]
+            self.three_address_code.emit(p[0].label, p[0].temp, p1.temp, p3.temp)
+            p[0].true_list.append(self.three_address_code.next_statement)
+            p[0].false_list.append(self.three_address_code.next_statement + 1)
+            self.three_address_code.emit("ifnz goto", "", p[0].temp, "")
+            self.three_address_code.emit("goto", "", "", "")
 
     def p_exclusive_or_expression(self, p):
         """
@@ -1476,44 +4623,205 @@ class Parser:
         if len(p) == 2:
             p[0] = p[1]
         if len(p) == 4:
-            if p[1].type == None or p[3].type == None:
+            if (
+                p[1] is None
+                or p[3] is None
+                or p[1].type is None
+                or p[3].type is None
+                or p[1].type == []
+                or p[3].type == []
+            ):
                 self.symtab.error = True
-                print(bcolors.FAIL+"Cannot perform bitwise xor on line " + str(p.lineno(2))+bcolors.ENDC)
+                print(
+                    bcolors.FAIL
+                    + "Cannot perform bitwise xor on line "
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
+                )
 
-            elif p[1].type[0] in temp_list_ii and p[3].type[0] in temp_list_ii:
-                p[0] = Node(str(p[2]), [p[1], p[3]])
-                p[0].type = ["int"]
-                p[0].label += "int"
+            elif (
+                len(p[1].type) > 0
+                and p[1].type[0] in temp_list_ii
+                and len(p[3].type) > 0
+                and p[3].type[0] in temp_list_ii
+            ):
+                p0type = ["int"]
+                p0label = str(p[2])
 
                 if "unsigned" in p[1].type or "unsigned" in p[3].type:
-                    p[0].type.append("unsigned")
+                    p0type.append("unsigned")
                     p[0].label += "unsigned"
-                p[0].node.attr["label"] = p[0].label
+
+                p0label = p0label.replace(" ", "_")
 
                 isIn = 1
-                for single_type in p[0].type:
+                for single_type in p0type:
                     if single_type not in p[1].type:
                         isIn = 0
                 if isIn == 0:
                     p[1].totype = p[0].type
+                    p[1].totype = p0type
+                    strp1 = "to_"
+                    for single_type in p[1].totype:
+                        strp1 += single_type
+                    p1 = Node(strp1, [p[1]])
+                else:
+                    p1 = p[1]
 
                 isIn = 1
-                for single_type in p[3].type:
+                for single_type in p0type:
                     if single_type not in p[3].type:
                         isIn = 0
                 if isIn == 0:
-                    p[3].totype = p[0].type
+                    p[3].totype = p0type
+                    strp3 = "to_"
+                    for single_type in p[3].totype:
+                        strp3 += single_type
+                    p3 = Node(strp3, [p[3]])
+                else:
+                    p3 = p[3]
+                p[0] = Node(str(p[2]), [p1, p3])
+                p[0].type = p0type
+                p[0].label = p0label
+                p[0].node.attr["label"] = p[0].label
+
             else:
                 self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Bitwise xor operation between types "
+                print(
+                    bcolors.FAIL
+                    + "Bitwise xor operation between types "
                     + str(p[1].type)
                     + " and "
                     + str(p[3].type)
                     + " on line "
                     + str(p.lineno(2))
-                    + " is incompatible."+bcolors.ENDC
+                    + " is incompatible."
+                    + bcolors.ENDC
                 )
+            if self.symtab.error:
+                return
+
+            if p[1].totype is not None and p[1].totype != p[1].type:
+                p1.temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p1.temp, 0)
+                self.symtab.modify_symbol(p1.temp, "data_type", p[1].totype)
+                self.symtab.modify_symbol(p1.temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[1].totype, p1.temp)
+                if self.symtab.is_global(p1.temp):
+                    self.symtab.modify_symbol(p1.temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p1.temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p1.temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p1.temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p1.temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p1.temp = found["temp"]
+                currtype = []
+                for single_type in p[1].type:
+                    if (
+                        single_type != "arr"
+                        and single_type[0] != "["
+                        and single_type[-1] != "]"
+                    ):
+                        currtype.append(single_type)
+                cstr = "," + " ".join(currtype).replace(" ", "_")
+                self.three_address_code.emit(
+                    "cast",
+                    p1.temp,
+                    p[1].temp,
+                    " ".join(p[1].totype).replace(" ", "_") + cstr,
+                )
+            else:
+                p1.temp = p[1].temp
+            if p[3].totype is not None and p[3].totype != p[3].type:
+                p3.temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p3.temp, 0)
+                self.symtab.modify_symbol(p3.temp, "data_type", p[3].totype)
+                self.symtab.modify_symbol(p3.temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[3].totype, p3.temp)
+                if self.symtab.is_global(p3.temp):
+                    self.symtab.modify_symbol(p3.temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p3.temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p3.temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p3.temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p3.temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p3.temp = found["temp"]
+
+                currtype = []
+                for single_type in p[3].type:
+                    if (
+                        single_type != "arr"
+                        and single_type[0] != "["
+                        and single_type[-1] != "]"
+                    ):
+                        currtype.append(single_type)
+                cstr = "," + " ".join(currtype).replace(" ", "_")
+                self.three_address_code.emit(
+                    "cast",
+                    p3.temp,
+                    p[3].temp,
+                    " ".join(p[3].totype).replace(" ", "_") + cstr,
+                )
+            else:
+                p3.temp = p[3].temp
+
+            p[0].temp = self.three_address_code.create_temp_var()
+            self.symtab.insert_symbol(p[0].temp, 0)
+            self.symtab.modify_symbol(p[0].temp, "data_type", p[0].type)
+            self.symtab.modify_symbol(p[0].temp, "identifier_type", "TEMP")
+            self.symtab_size_update(p[0].type, p[0].temp)
+            if self.symtab.is_global(p[0].temp):
+                self.symtab.modify_symbol(p[0].temp, "variable_scope", "Global")
+            else:
+                self.symtab.modify_symbol(p[0].temp, "variable_scope", "Local")
+                found, entry = self.symtab.return_sym_tab_entry(p[0].temp)
+                var_size = found["allocated_size"]
+                if found["variable_scope"] == "Local":
+
+                    if found["offset"] > 0:
+                        self.symtab.modify_symbol(
+                            p[0].temp,
+                            "temp",
+                            f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                        )
+                    else:
+                        self.symtab.modify_symbol(
+                            p[0].temp,
+                            "temp",
+                            f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                        )
+                p[0].temp = found["temp"]
+            self.three_address_code.emit(p[0].label, p[0].temp, p1.temp, p3.temp)
+            p[0].true_list.append(self.three_address_code.next_statement)
+            p[0].false_list.append(self.three_address_code.next_statement + 1)
+            self.three_address_code.emit("ifnz goto", "", p[0].temp, "")
+            self.three_address_code.emit("goto", "", "", "")
 
     def p_inclusive_or_expression(self, p):
         """
@@ -1527,17 +4835,30 @@ class Parser:
             p[0] = p[1]
 
         elif len(p) == 4:
-            if p[1].type == None or p[3].type == None:
+            if (
+                p[1] is None
+                or p[3] is None
+                or p[1].type is None
+                or p[3].type is None
+                or p[1].type == []
+                or p[3].type == []
+            ):
                 self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Cannot perform bitwise or between expressions on line "
-                    + str(p.lineno(2))+bcolors.ENDC
+                print(
+                    bcolors.FAIL
+                    + "Cannot perform bitwise or between expressions on line "
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
                 )
 
-            elif p[1].type[0] in temp_list and p[3].type[0] in temp_list:
-                p[0] = Node(str(p[2]), [p[1], p[3]])
-                p[0].type = ["int"]
-                p[0].label += "int"
+            elif (
+                len(p[1].type) > 0
+                and p[1].type[0] in temp_list
+                and len(p[3].type) > 0
+                and p[3].type[0] in temp_list
+            ):
+                p0type = ["int"]
+                p0label = str(p[2])
 
                 if "unsigned" in p[1].type or "unsigned" in p[3].type:
                     p[0].type.append("unsigned")
@@ -1545,73 +4866,360 @@ class Parser:
                 p[0].node.attr["label"] = p[0].label
 
                 flag = True
-                for i in p[0].type:
+                for i in p0type:
                     if i not in p[1].type:
                         flag = False
                 if flag == False:
-                    p[1].totype = p[0].type
-
+                    p[1].totype = p0type
+                    strp1 = "to_"
+                    for single_type in p[1].totype:
+                        strp1 += single_type
+                    p1 = Node(strp1, [p[1]])
+                else:
+                    p1 = p[1]
                 flag = True
-                for i in p[0].type:
+
+                for i in p0type:
                     if i not in p[3].type:
                         flag = False
                 if flag == False:
-                    p[3].totype = p[0].type
+                    p[3].totype = p0type
+                    strp3 = "to_"
+                    for single_type in p[3].totype:
+                        strp3 += single_type
+                    p3 = Node(strp3, [p[3]])
+                else:
+                    p3 = p[3]
+
+                p[0] = Node(str(p[2]), [p1, p3])
+                p[0].type = p0type
+                p[0].label = p0label
+                p[0].node.attr["label"] = p[0].label
 
             else:
                 self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Bitwise or operation between types "
+                print(
+                    bcolors.FAIL
+                    + "Bitwise or operation between types "
                     + str(p[1].type)
                     + " and "
                     + str(p[3].type)
                     + " on line "
                     + str(p.lineno(2))
-                    + " is incompatible."+bcolors.ENDC
+                    + " is incompatible."
+                    + bcolors.ENDC
                 )
+
+            if self.symtab.error:
+                return
+
+            if p[1].totype is not None and p[1].totype != p[1].type:
+                p1.temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p1.temp, 0)
+                self.symtab.modify_symbol(p1.temp, "data_type", p[1].totype)
+                self.symtab.modify_symbol(p1.temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[1].totype, p1.temp)
+                if self.symtab.is_global(p1.temp):
+                    self.symtab.modify_symbol(p1.temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p1.temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p1.temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p1.temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p1.temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p1.temp = found["temp"]
+                currtype = []
+                for single_type in p[1].type:
+                    if (
+                        single_type != "arr"
+                        and single_type[0] != "["
+                        and single_type[-1] != "]"
+                    ):
+                        currtype.append(single_type)
+                cstr = "," + " ".join(currtype).replace(" ", "_")
+                self.three_address_code.emit(
+                    "cast",
+                    p1.temp,
+                    p[1].temp,
+                    " ".join(p[1].totype).replace(" ", "_") + cstr,
+                )
+            else:
+                p1.temp = p[1].temp
+            if p[3].totype is not None and p[3].totype != p[3].type:
+                p3.temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p3.temp, 0)
+                self.symtab.modify_symbol(p3.temp, "data_type", p[3].totype)
+                self.symtab.modify_symbol(p3.temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[3].totype, p3.temp)
+                if self.symtab.is_global(p3.temp):
+                    self.symtab.modify_symbol(p3.temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p3.temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p3.temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p3.temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p3.temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p3.temp = found["temp"]
+
+                currtype = []
+                for single_type in p[3].type:
+                    if (
+                        single_type != "arr"
+                        and single_type[0] != "["
+                        and single_type[-1] != "]"
+                    ):
+                        currtype.append(single_type)
+                cstr = "," + " ".join(currtype).replace(" ", "_")
+                self.three_address_code.emit(
+                    "cast",
+                    p3.temp,
+                    p[3].temp,
+                    " ".join(p[3].totype).replace(" ", "_") + cstr,
+                )
+            else:
+                p3.temp = p[3].temp
+
+            p[0].temp = self.three_address_code.create_temp_var()
+            self.symtab.insert_symbol(p[0].temp, 0)
+            self.symtab.modify_symbol(p[0].temp, "data_type", p[0].type)
+            self.symtab.modify_symbol(p[0].temp, "identifier_type", "TEMP")
+            self.symtab_size_update(p[0].type, p[0].temp)
+            if self.symtab.is_global(p[0].temp):
+                self.symtab.modify_symbol(p[0].temp, "variable_scope", "Global")
+            else:
+                self.symtab.modify_symbol(p[0].temp, "variable_scope", "Local")
+                found, entry = self.symtab.return_sym_tab_entry(p[0].temp)
+                var_size = found["allocated_size"]
+                if found["variable_scope"] == "Local":
+
+                    if found["offset"] > 0:
+                        self.symtab.modify_symbol(
+                            p[0].temp,
+                            "temp",
+                            f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                        )
+                    else:
+                        self.symtab.modify_symbol(
+                            p[0].temp,
+                            "temp",
+                            f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                        )
+                p[0].temp = found["temp"]
+            self.three_address_code.emit(p[0].label, p[0].temp, p1.temp, p3.temp)
+            p[0].true_list.append(self.three_address_code.next_statement)
+            p[0].false_list.append(self.three_address_code.next_statement + 1)
+            self.three_address_code.emit("ifnz goto", "", p[0].temp, "")
+            self.three_address_code.emit("goto", "", "", "")
 
     def p_logical_and_expression(self, p):
         """logical_and_expression : inclusive_or_expression
-        | logical_and_expression AND_OP inclusive_or_expression
+        | logical_and_expression AND_OP marker_global inclusive_or_expression marker_global
         """
         if self.error:
             return
         if len(p) == 2:
             p[0] = p[1]
-        elif len(p) == 4:
-            if p[1].type == None or p[3].type == None:
-                self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Cannot perform logical and between expressions on line "
-                    + str(p.lineno(2))+bcolors.ENDC
+        elif len(p) == 6:
+            if (
+                p[1] is None
+                or p[4] is None
+                or p[1].type is None
+                or p[4].type is None
+                or p[1].type == []
+                or p[4].type == []
+            ):
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Cannot perform logical and between expressions on line"
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
+                )
+            elif (
+                "struct" in p[1].type
+                or "union" in p[1].type
+                or "struct" in p[1].type
+                or "union" in p[1].type
+            ):
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Need scalars to perform logical operation at line"
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
                 )
             else:
-                p[0] = Node(str(p[2]), [p[1], p[3]])
+                p[0] = Node(str(p[2]), [p[1], p[4]])
                 p[0].type = ["int"]
+                if self.symtab.error:
+                    return
+                self.three_address_code.backpatch(p[1].true_list, p[3].quadruples)
+                self.three_address_code.backpatch(p[1].false_list, p[5].quadruples)
+                p[0].false_list = p[1].false_list + p[4].false_list
+                p[0].true_list = p[4].true_list
+                p[0].temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p[0].temp, 0)
+                self.symtab.modify_symbol(p[0].temp, "data_type", p[0].type)
+                self.symtab.modify_symbol(p[0].temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[0].type, p[0].temp)
+                if self.symtab.is_global(p[0].temp):
+                    self.symtab.modify_symbol(p[0].temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p[0].temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p[0].temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p[0].temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p[0].temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p[0].temp = found["temp"]
+                self.three_address_code.emit("=_int", p[0].temp, "$0", "")
+                self.three_address_code.emit(
+                    "ifnz goto",
+                    self.three_address_code.next_statement + 3,
+                    p[1].temp,
+                    "",
+                )
+                self.three_address_code.emit(
+                    "goto", self.three_address_code.next_statement + 5, "", ""
+                )
+                self.three_address_code.emit(
+                    "ifnz goto",
+                    self.three_address_code.next_statement + 3,
+                    p[4].temp,
+                    "",
+                )
+                self.three_address_code.emit(
+                    "goto", self.three_address_code.next_statement + 3, "", ""
+                )
+                self.three_address_code.emit("=_int", p[0].temp, "$1", "")
 
     def p_logical_or_expression(self, p):
         """logical_or_expression : logical_and_expression
-        | logical_or_expression OR_OP logical_and_expression
+        | logical_or_expression OR_OP marker_global logical_and_expression marker_global
         """
         if self.error:
             return
         if len(p) == 2:
             p[0] = p[1]
 
-        elif len(p) == 4:
-            if p[1].type == None or p[3].type == None:
-                self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Cannot perform logical or between expressions on line "
-                    + str(p.lineno(2))+bcolors.ENDC
+        elif len(p) == 6:
+            if (
+                p[1] is None
+                or p[4] is None
+                or p[1].type is None
+                or p[4].type is None
+                or p[1].type == []
+                or p[4].type == []
+            ):
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Cannot perform logical or between expressions on line"
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
+                )
+            elif (
+                "struct" in p[1].type
+                or "union" in p[1].type
+                or "struct" in p[1].type
+                or "union" in p[1].type
+            ):
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Need scalars to perform logical operation at line"
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
                 )
             else:
-                p[0] = Node(str(p[2]), [p[1], p[3]])
+                p[0] = Node(str(p[2]), [p[1], p[4]])
                 p[0].type = ["int"]
+                if self.symtab.error:
+                    return
+                self.three_address_code.backpatch(p[1].false_list, p[3].quadruples)
+                self.three_address_code.backpatch(p[1].true_list, p[5].quadruples)
+                p[0].true_list = p[1].true_list + p[4].true_list
+                p[0].false_list = p[4].false_list
+                p[0].temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p[0].temp, 0)
+                self.symtab.modify_symbol(p[0].temp, "data_type", p[0].type)
+                self.symtab.modify_symbol(p[0].temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[0].type, p[0].temp)
+                if self.symtab.is_global(p[0].temp):
+                    self.symtab.modify_symbol(p[0].temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p[0].temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p[0].temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p[0].temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p[0].temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p[0].temp = found["temp"]
+
+                self.three_address_code.emit("=_int", p[0].temp, "$1", "")
+                self.three_address_code.emit(
+                    "ifnz goto",
+                    self.three_address_code.next_statement + 4,
+                    p[1].temp,
+                    "",
+                )
+                self.three_address_code.emit(
+                    "ifnz goto",
+                    self.three_address_code.next_statement + 3,
+                    p[4].temp,
+                    "",
+                )
+                self.three_address_code.emit("=_int", p[0].temp, "$0", "")
 
     def p_conditional_expression(self, p):
         """conditional_expression : logical_or_expression
-        | logical_or_expression '?' expression ':' conditional_expression
+        | logical_or_expression '?' marker_global expression ':' conditional_expression marker_global
         """
         temp_list_aa = ["bool", "char", "short", "int", "float"]
         temp_list_ii = ["bool", "char", "short", "int"]
@@ -1620,174 +5228,397 @@ class Parser:
             return
         if len(p) == 2:
             p[0] = p[1]
-        elif len(p) == 6:
-            p[0] = Node("TERNARY", [p[1], p[3], p[5]])
 
+        elif len(p) == 9:
+            if p[1] is None or p[1].type is None or p[1].type == []:
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Cannot perform conditional operation at line "
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
+                )
+                return
             if "struct" in p[1].type or "union" in p[1].type:
-                self.symtab.error = True
-                print(bcolors.FAIL+
-                    "First operand of a ternary operator cannot be struct/union type variable"+bcolors.ENDC
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Struct / Union type variable not allowed as first operand of ternary operator"
+                    + bcolors.ENDC
+                )
+                return
+            elif p[4] is None or p[7] is None:
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Cannot perform conditional operation at line"
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
+                )
+                return
+            elif p[4].type in [None, []] or p[7].type in [None, []]:
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Cannot perform conditional operation at line"
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
+                )
+                return
+            elif "struct" in p[4].type and "struct" not in p[7].type:
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Type mismatch between "
+                    + str(p[4].type)
+                    + " and "
+                    + str(p[7].type)
+                    + " for conditional operation at line"
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
+                )
+                return
+            elif "struct" in p[7].type and "struct" not in p[4].type:
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Type mismatch between "
+                    + str(p[4].type)
+                    + " and "
+                    + str(p[7].type)
+                    + " for conditional operation at line"
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
+                )
+                return
+            elif (
+                "struct" in p[4].type
+                and "struct" in p[7].type
+                and p[4].type[1] != p[7].type[1]
+            ):
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Incompatible struct types to perform conditional operation at line"
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
+                )
+                return
+            elif "union" in p[4].type and "union" not in p[7].type:
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Type mismatch between "
+                    + str(p[4].type)
+                    + " and "
+                    + str(p[7].type)
+                    + " for conditional operation at line"
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
+                )
+                return
+            elif "union" in p[7].type and "union" not in p[4].type:
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Type mismatch between "
+                    + str(p[4].type)
+                    + " and "
+                    + str(p[7].type)
+                    + " for conditional operation at line"
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
+                )
+                return
+            elif (
+                "union" in p[4].type
+                and "union" in p[7].type
+                and p[4].type[1] != p[7].type[1]
+            ):
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Incompatible union types to perform conditional operation at line"
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
+                )
+                return
+            elif (
+                p[4].type[0] not in temp_list_aa
+                and p[4].type[0][-1] != "*"
+                and p[7].type[0] in temp_list_aa
+            ):
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Type mismatch while performing conditional operation at line "
+                    + str(p.lineno(2))
+                    + bcolors.ENDC
                 )
                 return
 
-            elif p[3] == None or p[5] == None:
-                self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Cannot perform conditional operation at line " + str(p.lineno(2))+bcolors.ENDC
-                )
-                return
-
-            elif p[3].type in [None, []] or p[5].type in [None, []]:
-                self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Cannot perform conditional operation at line " + str(p.lineno(2))+bcolors.ENDC
-                )
-
-            elif "struct" in p[3].type and "struct" not in p[5].type:
-                self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Type mismatch between "
-                    + str(p[3].type)
-                    + " and "
-                    + str(p[5].type)
-                    + " for conditional operation at line "
-                    + str(p.lineno(2))+bcolors.ENDC
-                )
-
-            elif "struct" in p[5].type and "struct" not in p[3].type:
-                self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Type mismatch between "
-                    + str(p[3].type)
-                    + " and "
-                    + str(p[5].type)
-                    + " for conditional operation at line "
-                    + str(p.lineno(2))+bcolors.ENDC
-                )
-
             elif (
-                "struct" in p[3].type
-                and "struct" in p[5].type
-                and p[3].type[1] != p[5].type[1]
+                p[4].type[0][-1] == "*"
+                and p[7].type[0][-1] != "*"
+                and p[7].type[0] not in temp_list_ii
             ):
-                self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Incompatible struct types to perform conditional operation at line "
-                    + str(p.lineno(2))+bcolors.ENDC
-                )
-
-            elif "union" in p[3].type and "union" not in p[5].type:
-                self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Type mismatch between "
-                    + str(p[3].type)
-                    + " and "
-                    + str(p[5].type)
-                    + " for conditional operation at line "
-                    + str(p.lineno(2))+bcolors.ENDC
-                )
-
-            elif "union" in p[5].type and "union" not in p[3].type:
-                self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Type mismatch between "
-                    + str(p[3].type)
-                    + " and "
-                    + str(p[5].type)
-                    + " for conditional operation at line "
-                    + str(p.lineno(2))+bcolors.ENDC
-                )
-
-            elif (
-                "union" in p[3].type
-                and "union" in p[5].type
-                and p[3].type[1] != p[5].type[1]
-            ):
-                self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Incompatible union types to perform conditional operation at line "
-                    + str(p.lineno(2))+bcolors.ENDC
-                )
-            elif (
-                p[3].type[0] not in temp_list_aa
-                and p[3].type[0][-1] != "*"
-                and p[5].type[0] in temp_list_aa
-            ):
-                self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Type mismatch while performing conditional operation at line "
-                    + str(p.lineno(2))+bcolors.ENDC
-                )
-
-            elif (
-                p[3].type[0][-1] == "*"
-                and p[5].type[0][-1] != "*"
-                and p[5].type[0] not in temp_list_ii
-            ):
-                self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Conditional operation between pointer and "
-                    + str(p[5].type)
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Incompatible conditional operation between pointer and "
+                    + str(p[7].type)
                     + " at line "
                     + str(p.lineno(2))
-                    + " is incompatible."+bcolors.ENDC
+                    + bcolors.ENDC
                 )
-
+                return
             elif (
-                p[5].type[0][-1] == "*"
-                and p[3].type[0][-1] != "*"
-                and p[3].type[0] not in temp_list_ii
+                p[7].type[0][-1] == "*"
+                and p[4].type[0][-1] != "*"
+                and p[4].type[0] not in temp_list_ii
             ):
-                self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Conditional operation between pointer and "
-                    + str(p[3].type)
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Incompatible conditional operation between pointer and "
+                    + str(p[7].type)
                     + " at line "
                     + str(p.lineno(2))
-                    + " is incompatible."+bcolors.ENDC
+                    + bcolors.ENDC
                 )
+                return
+            isError = False
+            if p[4].type == p[7].type:
+                p0type = p[4].type
 
-            if p[3].type == p[5].type:
-                p[0].type = p[3].type
-                return
-            if p[3].type[0][-1] == "*" or p[5].type[0][-1] == "*":
-                p[0].type = ["int", "unsigned"]
-                return
-            if "str" in p[3].type:
-                p[0].type = p[5].type
-                return
-            if "str" in p[5].type:
-                p[0].type = p[3].type
-                return
+            elif (
+                len(p[4].type) > 0
+                and p[4].type[0][-1] == "*"
+                and len(p[7].type) > 0
+                and p[7].type[0][-1] == "*"
+            ):
+                p0type = ["void *"]
 
-            if p[3].type[0] in temp_list_aa and p[5].type[0] in [
-                "bool",
-                "char",
-                "short",
-                "int",
-                "float",
-            ]:
-                p[0].type = []
-                p[0].type.append(
+            elif (
+                len(p[4].type) > 0
+                and p[4].type[0][-1] == "*"
+                or len(p[7].type) > 0
+                and p[7].type[0][-1] == "*"
+            ):
+                if p[4].type[0][-1] == "*":
+                    p0type = p[4].type
+                elif p[7].type[0][-1] == "*":
+                    p0type = p[7].type
+
+            elif "str" in p[4].type:
+                p0type = p[7].type
+            elif "str" in p[7].type:
+                p0type = p[4].type
+
+            elif (
+                len(p[4].type) > 0
+                and p[4].type[0] in temp_list_aa
+                and len(p[7].type) > 0
+                and p[7].type[0] in temp_list_aa
+            ):
+                p0type = []
+                p0type.append(
                     temp_list_aa[
                         max(
-                            temp_list_aa.index(p[1].type[0]),
-                            temp_list_aa.index(p[3].type[0]),
+                            temp_list_aa.index(p[4].type[0]),
+                            temp_list_aa.index(p[7].type[0]),
                         )
                     ]
                 )
                 if (
-                    "unsigned" in p[3].type
-                    or "unsigned" in p[5].type
-                    and p[0].type[0] in temp_list_di
+                    "unsigned" in p[4].type
+                    or "unsigned" in p[7].type
+                    and p0type[0] in temp_list_di
                 ):
-                    p[0].type.append("unsigned")
+                    p0type.append("unsigned")
+            else:
+                isError = True
+            if isError == False:
+                if p0type != p[4].type:
+                    p4str = "to"
+                    for single_type in p0type:
+                        p4str += "_" + single_type
+                    p4str = p4str.replace(" ", "_")
+                    p4 = Node(p4str, [p[4]])
+                else:
+                    p4 = p[4]
+                if p0type != p[7].type:
+                    p7str = "to"
+                    for single_type in p0type:
+                        p7str += "_" + single_type
+                    p7str = p7str.replace(" ", "_")
+                    p7 = Node(p7str, [p[7]])
+                else:
+                    p7 = p[7]
+                p[0] = Node("TERNARY", [p[1], p4, p7])
+                p[0].type = p0type
+                if self.symtab.error:
+                    return
+                p[4].totype = p0type
+                p4type = []
+                for single_type in p[4].type:
+                    if (
+                        single_type != "arr"
+                        and single_type[0] != "["
+                        and single_type[-1] != "]"
+                    ):
+                        p4type.append(single_type)
+                if p[4].totype is not None and p[4].totype != p4type:
+                    p4.temp = self.three_address_code.create_temp_var()
+                    self.symtab.insert_symbol(p4.temp, 0)
+                    self.symtab.modify_symbol(p4.temp, "data_type", p[4].totype)
+                    self.symtab.modify_symbol(p4.temp, "identifier_type", "TEMP")
+                    self.symtab_size_update(p[4].totype, p4.temp)
+                    if self.symtab.is_global(p4.temp):
+                        self.symtab.modify_symbol(p4.temp, "variable_scope", "Global")
+                    else:
+                        self.symtab.modify_symbol(p4.temp, "variable_scope", "Local")
+                        found, entry = self.symtab.return_sym_tab_entry(p4.temp)
+                        var_size = found["allocated_size"]
+                        if found["variable_scope"] == "Local":
+
+                            if found["offset"] > 0:
+                                self.symtab.modify_symbol(
+                                    p4.temp,
+                                    "temp",
+                                    f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                                )
+                            else:
+                                self.symtab.modify_symbol(
+                                    p4.temp,
+                                    "temp",
+                                    f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                                )
+                        p4.temp = found["temp"]
+                    currtype = []
+                    for single_type in p[4].type:
+                        if (
+                            single_type != "arr"
+                            and single_type[0] != "["
+                            and single_type[-1] != "]"
+                        ):
+                            currtype.append(single_type)
+                    cstr = "," + " ".join(currtype).replace(" ", "_")
+                    self.three_address_code.emit(
+                        "cast",
+                        p4.temp,
+                        p[4].temp,
+                        " ".join(p[4].totype).replace(" ", "_") + cstr,
+                    )
+                else:
+                    p4.temp = p[4].temp
+                p[7].totype = p0type
+                p7type = []
+                for single_type in p[7].type:
+                    if (
+                        single_type != "arr"
+                        and single_type[0] != "["
+                        and single_type[-1] != "]"
+                    ):
+                        p7type.append(single_type)
+                if p[7].totype is not None and p[7].totype != p7type:
+                    p7.temp = self.three_address_code.create_temp_var()
+                    self.symtab.insert_symbol(p7.temp, 0)
+                    self.symtab.modify_symbol(p7.temp, "data_type", p[7].totype)
+                    self.symtab.modify_symbol(p7.temp, "identifier_type", "TEMP")
+                    self.symtab_size_update(p[7].totype, p7.temp)
+                    if self.symtab.is_global(p7.temp):
+                        self.symtab.modify_symbol(p7.temp, "variable_scope", "Global")
+                    else:
+                        self.symtab.modify_symbol(p7.temp, "variable_scope", "Local")
+                        found, entry = self.symtab.return_sym_tab_entry(p7.temp)
+                        var_size = found["allocated_size"]
+                        if found["variable_scope"] == "Local":
+
+                            if found["offset"] > 0:
+                                self.symtab.modify_symbol(
+                                    p7.temp,
+                                    "temp",
+                                    f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                                )
+                            else:
+                                self.symtab.modify_symbol(
+                                    p7.temp,
+                                    "temp",
+                                    f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                                )
+                        p7.temp = found["temp"]
+                    currtype = []
+                    for single_type in p[7].type:
+                        if (
+                            single_type != "arr"
+                            and single_type[0] != "["
+                            and single_type[-1] != "]"
+                        ):
+                            currtype.append(single_type)
+                    cstr = "," + " ".join(currtype).replace(" ", "_")
+                    self.three_address_code.emit(
+                        "cast",
+                        p7.temp,
+                        p[7].temp,
+                        " ".join(p[7].totype).replace(" ", "_") + cstr,
+                    )
+                else:
+                    p7.temp = p[7].temp
+                p[0].temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p[0].temp, 0)
+                self.symtab.modify_symbol(p[0].temp, "data_type", p[0].type)
+                self.symtab.modify_symbol(p[0].temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[0].type, p[0].temp)
+                if self.symtab.is_global(p[0].temp):
+                    self.symtab.modify_symbol(p[0].temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p[0].temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p[0].temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p[0].temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p[0].temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p[0].temp = found["temp"]
+
+                self.three_address_code.emit(
+                    "ifnz goto",
+                    self.three_address_code.next_statement + 3,
+                    p[1].temp,
+                    "",
+                )
+                self.three_address_code.emit(
+                    "goto", self.three_address_code.next_statement + 4, "", ""
+                )
+                self.three_address_code.emit(f"=_{p[0].type[0]}", p[0].temp, p4.temp)
+                self.three_address_code.emit(
+                    "goto", self.three_address_code.next_statement + 3, "", ""
+                )
+                self.three_address_code.emit(f"=_{p[0].type[0]}", p[0].temp, p7.temp)
+                self.three_address_code.backpatch(p[1].true_list, p[3].quadruples)
+                self.three_address_code.backpatch(p[1].false_list, p[6].quadruples)
+                self.three_address_code.backpatch(p[4].true_list, p[8].quadruples)
+                self.three_address_code.backpatch(p[4].false_list, p[8].quadruples)
+                p[0].true_list = p[4].true_list + p[7].true_list
+                p[0].false_list = p[4].false_list + p[7].false_list
                 return
-            self.symtab.error = True
-            print(bcolors.FAIL+
-                "Conditional operation at line "
+            self.symtab.error = 1
+            print(
+                bcolors.FAIL
+                + "Cannot perform conditional operation at line"
                 + str(p.lineno(2))
-                + " cannot be performed."+bcolors.ENDC
+                + bcolors.ENDC
             )
 
     def p_assignment_expression(self, p):
@@ -1805,16 +5636,22 @@ class Parser:
             p[0] = p[2]
             if (p[1] is not None) and (p[1].node is not None):
                 if (p[3] is not None) and (p[3].node is not None):
-
                     if p[1].type in [None, []] or p[3].type in [None, []]:
                         self.symtab.error = True
-                        print(bcolors.FAIL+"Cannot perform assignment at line " + str(p[2].lineno)+bcolors.ENDC)
+                        print(
+                            bcolors.FAIL
+                            + "Cannot perform assignment at line "
+                            + str(p[2].lineno)
+                            + bcolors.ENDC
+                        )
 
                     elif p[1].type[0][-1] == "*" and "arr" in p[1].type:
                         self.symtab.error = True
-                        print(bcolors.FAIL+
-                            "Cannot perform assignment to type array at line "
-                            + str(p[2].lineno)+bcolors.ENDC
+                        print(
+                            bcolors.FAIL
+                            + "Cannot perform assignment to type array at line "
+                            + str(p[2].lineno)
+                            + bcolors.ENDC
                         )
 
                     elif (
@@ -1823,20 +5660,24 @@ class Parser:
                         and "union" not in p[1].type[0]
                     ):
                         self.symtab.error = True
-                        print(bcolors.FAIL+
-                            "Left hand side must be a variable at line "
-                            + str(p[2].lineno)+bcolors.ENDC
+                        print(
+                            bcolors.FAIL
+                            + "Left hand side must be a variable at line "
+                            + str(p[2].lineno)
+                            + bcolors.ENDC
                         )
 
                     elif "struct" in p[1].type and "struct" not in p[3].type:
                         self.symtab.error = True
-                        print(bcolors.FAIL+
-                            "Cannot assign non-struct value "
+                        print(
+                            bcolors.FAIL
+                            + "Cannot assign non-struct value "
                             + str(p[3].type)
                             + " to struct type "
                             + str(p[1].type)
                             + " at line "
-                            + str(p[2].lineno)+bcolors.ENDC
+                            + str(p[2].lineno)
+                            + bcolors.ENDC
                         )
 
                     elif (
@@ -1845,20 +5686,24 @@ class Parser:
                         and p[1].type[1] != p[3].type[1]
                     ):
                         self.symtab.error = True
-                        print(bcolors.FAIL+
-                            "Incompatible struct types to perform assignment at line "
-                            + str(p[2].lineno)+bcolors.ENDC
+                        print(
+                            bcolors.FAIL
+                            + "Incompatible struct types to perform assignment at line "
+                            + str(p[2].lineno)
+                            + bcolors.ENDC
                         )
 
                     elif "union" in p[1].type and "union" not in p[3].type:
                         self.symtab.error = True
-                        print(bcolors.FAIL+
-                            "Cannot assign non-struct value "
+                        print(
+                            bcolors.FAIL
+                            + "Cannot assign non-struct value "
                             + str(p[3].type)
                             + " to struct type "
                             + str(p[1].type)
                             + " at line "
-                            + str(p[2].lineno)+bcolors.ENDC
+                            + str(p[2].lineno)
+                            + bcolors.ENDC
                         )
 
                     elif (
@@ -1867,17 +5712,21 @@ class Parser:
                         and p[1].type[1] != p[3].type[1]
                     ):
                         self.symtab.error = True
-                        print(bcolors.FAIL+
-                            "Incompatible union types at line "
+                        print(
+                            bcolors.FAIL
+                            + "Incompatible union types at line "
                             + str(p[2].lineno)
-                            + " .Assignment not possible."+bcolors.ENDC
+                            + " .Assignment not possible."
+                            + bcolors.ENDC
                         )
 
                     elif p[1].type in [None, []] or p[3].type in [None, []]:
                         self.symtab.error = True
-                        print(bcolors.FAIL+
-                            "Type mismatch while assigning value at line "
-                            + str(p[2].lineno)+bcolors.ENDC
+                        print(
+                            bcolors.FAIL
+                            + "Type mismatch while assigning value at line "
+                            + str(p[2].lineno)
+                            + bcolors.ENDC
                         )
 
                     elif (
@@ -1886,9 +5735,11 @@ class Parser:
                         and p[3].type[0] in ["bool", "char", "short", "int", "float"]
                     ):
                         self.symtab.error = True
-                        print(bcolors.FAIL+
-                            "Type mismatch while assigning value at line "
-                            + str(p[2].lineno)+bcolors.ENDC
+                        print(
+                            bcolors.FAIL
+                            + "Type mismatch while assigning value at line "
+                            + str(p[2].lineno)
+                            + bcolors.ENDC
                         )
 
                     elif (
@@ -1897,12 +5748,14 @@ class Parser:
                         and p[3].type[0] not in ["bool", "char", "short", "int"]
                     ):
                         self.symtab.error = True
-                        print(bcolors.FAIL+
-                            "Assignment between pointer and "
+                        print(
+                            bcolors.FAIL
+                            + "Assignment between pointer and "
                             + str(p[3].type)
                             + " at line "
                             + str(p[2].lineno)
-                            + " is incompatible."+bcolors.ENDC
+                            + " is incompatible."
+                            + bcolors.ENDC
                         )
 
                     elif (
@@ -1911,51 +5764,249 @@ class Parser:
                         and p[2].label[0] not in ["+", "-", "="]
                     ):
                         self.symtab.error = True
-                        print(bcolors.FAIL+
-                            "Incompatible operands to binary operator "
+                        print(
+                            bcolors.FAIL
+                            + "Incompatible operands to binary operator "
                             + str(p[2].label)
                             + " at line "
-                            + str(p[2].lineno)+bcolors.ENDC
+                            + str(p[2].lineno)
+                            + bcolors.ENDC
                         )
 
                     else:
-                        graph.add_edge(p[0].node, p[1].node)
-                        graph.add_edge(p[0].node, p[3].node)
-
-                        graph.add_edge(p[1].node, p[3].node, style="invis")
-                        graph.add_subgraph([p[1].node, p[3].node], rank="same")
-                        p[0].children.append(p[1])
-                        p[0].children.append(p[3])
                         p[0].type = p[1].type
-
                         isin = True
                         for single_type in p[0].type:
-                            if single_type not in p[3].type:
-                                isin = False
+                            if single_type != "arr" and (
+                                single_type[0] != "[" and single_type[-1] != "]"
+                            ):
+                                if single_type not in p[3].type:
+                                    isin = False
                         if isin == False:
-                            p[3].totype = p[0].type
+                            p[3].totype = []
+                            for single_type in p[0].type:
+                                if single_type != "arr" and (
+                                    single_type[0] != "[" and single_type[-1] != "]"
+                                ):
+                                    p[3].totype.append(single_type)
+                            p3str = "to"
+                            for single_type in p[0].type:
+                                p3str += "_" + single_type
+                            p3str = p3str.replace(" ", "_")
+                            if "*" == p[0].type[0][-1]:
+                                p3str = "to_int_unsigned"
+                            p3 = Node(p3str, [p[3]])
+                        else:
+                            p3 = p[3]
+
+                        p[0].insert_edge([p[1], p3])
 
                         if "struct" in p[0].type:
-                            p[0].label += "struct"
+                            p[0].label += "_struct"
                         elif "union" in p[0].type:
-                            p[0].label += "union"
+                            p[0].label += "_union"
                         elif p[0].type[0][-1] == "*":
-                            p[0].label += "int unsigned"
+                            p[0].label += "_int_unsigned"
                         else:
-                            p[0].label += p[0].type[0]
+                            p[0].label += "_" + p[0].type[0]
                             if "unsigned" in p[0].type:
-                                p[0].label += " unsigned"
-
+                                p[0].label += "_unsigned"
+                        p[0].label = p[0].label.replace(" ", "_")
                         p[0].node.attr["label"] = p[0].label
-
                 else:
-                    graph.add_edge(p[0].node, p[1].node)
-                    p[0].children.append(p[1])
-
+                    p[0].insert_edge([p[1]])
             else:
                 if (p[3] is not None) and (p[3].node is not None):
-                    graph.add_edge(p[0].node, p[3].node)
-                    p[0].children.append(p[3])
+                    p[0].insert_edge([p[3]])
+            if self.symtab.error:
+                return
+            if p[3].totype is not None and p[3].totype != p[3].type:
+                p3.temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p3.temp, 0)
+                self.symtab.modify_symbol(p3.temp, "data_type", p[3].totype)
+                self.symtab.modify_symbol(p3.temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[3].totype, p3.temp)
+                if self.symtab.is_global(p3.temp):
+                    self.symtab.modify_symbol(p3.temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p3.temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p3.temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p3.temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p3.temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p3.temp = found["temp"]
+
+                currtype = []
+                for single_type in p[3].type:
+                    if (
+                        single_type != "arr"
+                        and single_type[0] != "["
+                        and single_type[-1] != "]"
+                    ):
+                        currtype.append(single_type)
+                cstr = "," + " ".join(currtype).replace(" ", "_")
+                self.three_address_code.emit(
+                    "cast",
+                    p3.temp,
+                    p[3].temp,
+                    " ".join(p[3].totype).replace(" ", "_") + cstr,
+                )
+            else:
+                p3.temp = p[3].temp
+            p[0].var_name = p[1].var_name
+            p[0].temp = p[1].temp
+            self.equate(p[1].type, p[0].label, p[1].temp, p3.temp)
+            p[0].true_list.append(self.three_address_code.next_statement)
+            p[0].false_list.append(self.three_address_code.next_statement + 1)
+            self.three_address_code.emit("ifnz goto", "", p[0].temp, "")
+            self.three_address_code.emit("goto", "", "", "")
+
+    def equate(self, p1type, p0label, p1temp, p3temp):
+        if p0label == "=_struct" or p0label == "=_union":
+            data_struc = self.symtab.return_type_tab_entry_su(p1type[1], p1type[0])
+            currOffset = 0
+            left_offset = 0
+            right_offset = 0
+            left_new_temp = ""
+            right_new_temp = ""
+
+            for var in data_struc["vars"].keys():
+
+                if p1temp[0] == "(":
+                    left_new_temp = self.three_address_code.create_temp_var()
+                    self.symtab.insert_symbol(left_new_temp, 0)
+                    self.symtab.modify_symbol(
+                        left_new_temp, "data_type", ["int", "unsigned"]
+                    )
+                    self.symtab.modify_symbol(left_new_temp, "identifier_type", "TEMP")
+                    self.symtab_size_update(["int", "unsigned"], left_new_temp)
+                    if self.symtab.is_global(left_new_temp):
+                        self.symtab.modify_symbol(
+                            left_new_temp, "variable_scope", "Global"
+                        )
+                    else:
+                        self.symtab.modify_symbol(
+                            left_new_temp, "variable_scope", "Local"
+                        )
+                        found, entry = self.symtab.return_sym_tab_entry(left_new_temp)
+                        var_size = found["allocated_size"]
+                        if found["variable_scope"] == "Local":
+                            if found["offset"] > 0:
+                                self.symtab.modify_symbol(
+                                    left_new_temp,
+                                    "temp",
+                                    f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                                )
+                            else:
+                                self.symtab.modify_symbol(
+                                    left_new_temp,
+                                    "temp",
+                                    f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                                )
+                        left_new_temp = found["temp"]
+                    self.three_address_code.emit(
+                        "+_int", left_new_temp, p1temp[1:-1], f"${currOffset}"
+                    )
+                    left_new_temp = f"({left_new_temp})"
+                else:
+                    left_offset = int(p1temp.split("(")[0])
+                    left_new_temp = f"{left_offset+currOffset}(%ebp)"
+
+                if p3temp[0] == "(":
+                    right_new_temp = self.three_address_code.create_temp_var()
+                    self.symtab.insert_symbol(right_new_temp, 0)
+                    self.symtab.modify_symbol(
+                        right_new_temp, "data_type", ["int", "unsigned"]
+                    )
+                    self.symtab.modify_symbol(right_new_temp, "identifier_type", "TEMP")
+                    self.symtab_size_update(["int", "unsigned"], right_new_temp)
+                    if self.symtab.is_global(right_new_temp):
+                        self.symtab.modify_symbol(
+                            right_new_temp, "variable_scope", "Global"
+                        )
+                    else:
+                        self.symtab.modify_symbol(
+                            right_new_temp, "variable_scope", "Local"
+                        )
+                        found, entry = self.symtab.return_sym_tab_entry(right_new_temp)
+                        var_size = found["allocated_size"]
+                        if found["variable_scope"] == "Local":
+
+                            if found["offset"] > 0:
+                                self.symtab.modify_symbol(
+                                    right_new_temp,
+                                    "temp",
+                                    f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                                )
+                            else:
+                                self.symtab.modify_symbol(
+                                    right_new_temp,
+                                    "temp",
+                                    f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                                )
+                        right_new_temp = found["temp"]
+                    self.three_address_code.emit(
+                        "+_int", right_new_temp, p3temp[1:-1], f"${currOffset}"
+                    )
+                    right_new_temp = f"({right_new_temp})"
+                else:
+                    right_offset = int(p3temp.split("(")[0])
+                    right_new_temp = f"{right_offset+currOffset}(%ebp)"
+
+                if "*" in data_struc["vars"][var]["data_type"]:
+                    self.three_address_code.emit(
+                        "=_unsigned_int", left_new_temp, right_new_temp
+                    )
+                    if p0label == "=_struct":
+                        currOffset += 4
+                elif "struct" in data_struc["vars"][var]["data_type"]:
+                    new_type = copy.deepcopy(data_struc["vars"][var]["data_type"])
+                    new_type.reverse()
+                    self.equate(new_type, "=_struct", left_new_temp, right_new_temp)
+                    if p0label == "=_struct":
+                        currOffset += data_struc["vars"][var]["allocated_size"]
+                elif "union" in data_struc["vars"][var]["data_type"]:
+                    new_type = copy.deepcopy(data_struc["vars"][var]["data_type"])
+                    new_type.reverse()
+                    self.equate(new_type, "=_union", left_new_temp, right_new_temp)
+                    if p0label == "=_struct":
+                        currOffset += data_struc["vars"][var]["allocated_size"]
+                elif "int" in data_struc["vars"][var]["data_type"]:
+                    self.three_address_code.emit("=_int", left_new_temp, right_new_temp)
+                    if p0label == "=_struct":
+                        currOffset += 4
+                elif "char" in data_struc["vars"][var]["data_type"]:
+                    self.three_address_code.emit(
+                        "=_char", left_new_temp, right_new_temp
+                    )
+                    if p0label == "=_struct":
+                        currOffset += 1
+                elif "float" in data_struc["vars"][var]["data_type"]:
+                    self.three_address_code.emit(
+                        "=_float", left_new_temp, right_new_temp
+                    )
+                    if p0label == "=_struct":
+                        currOffset += 4
+                elif "bool" in data_struc["vars"][var]["data_type"]:
+                    self.three_address_code.emit(
+                        "=_bool", left_new_temp, right_new_temp
+                    )
+                    if p0label == "=_struct":
+                        currOffset += 4
+        else:
+            self.three_address_code.emit(p0label, p1temp, p3temp, "")
 
     def p_assignment_operator(self, p):
         """
@@ -1988,6 +6039,11 @@ class Parser:
             p[0] = p[1]
         elif len(p) == 4:
             p[0] = Node(",", [p[1], p[3]])
+            if self.symtab.error:
+                return
+            p[0].temp = p[3].temp
+            p[0].true_list = p[3].true_list
+            p[0].false_list = p[3].false_list
 
     def p_constant_expression(self, p):
         """
@@ -2002,30 +6058,17 @@ class Parser:
     def p_initializer(self, p):
         """
         initializer : assignment_expression
-                    | '{' initializer_list '}'
-                    | '{' initializer_list ',' '}'
         """
         if self.error:
             return
         if len(p) == 2:
             p[0] = p[1]
-        elif len(p) == 4 or len(p) == 5:
+        elif len(p) == 4:
             p[0] = Node("{}", [p[2]])
             p[0].type = ["init_list"]
 
-    def p_initializer_list(self, p):
-        """
-        initializer_list : initializer
-                        | initializer_list ',' initializer
-        """
-        if self.error:
-            return
-        if len(p) == 2:
-            p[0] = p[1]
-        else:
-            p[0] = Node(",", [p[1], p[3]])
-
     # Declarators
+
     def p_declaration(self, p):
         """declaration	: declaration_specifiers ';'
         | declaration_specifiers init_declarator_list ';'
@@ -2049,22 +6092,27 @@ class Parser:
         elif len(p) == 3:
             p[0] = p[1]
             if (p[2] is not None) and (p[2].node is not None):
-                graph.add_edge(p[0].node, p[2].node)
-                p[0].children.append(p[2])
+                p[0].insert_edge([p[2]])
                 if p[2].type and p[0].type:
                     p[0].type += p[2].type
 
             p[0].extraVals = p[2].extraVals + p[0].extraVals
 
-        if p[0].type and "union" in p[0].type and len(p[0].type) > 2:
+        if 0 < len(p[0].type) and "union" in p[0].type and len(p[0].type) > 2:
             self.symtab.error = True
-            print(bcolors.FAIL+
-                "Cannot have type specifiers for union type at line " + str(p[1].line)+bcolors.ENDC
+            print(
+                bcolors.FAIL
+                + "Cannot have type specifiers for union type at line "
+                + str(p[1].line)
+                + bcolors.ENDC
             )
-        elif p[0].type and "struct" in p[0].type and len(p[0].type) > 2:
+        elif 0 < len(p[0].type) and "struct" in p[0].type and len(p[0].type) > 2:
             self.symtab.error = True
-            print(bcolors.FAIL+
-                "Cannot have type specifiers for struct type at line " + str(p[1].line)+bcolors.ENDC
+            print(
+                bcolors.FAIL
+                + "Cannot have type specifiers for struct type at line "
+                + str(p[1].line)
+                + bcolors.ENDC
             )
 
     def p_init_declarator_list(self, p):
@@ -2100,12 +6148,12 @@ class Parser:
             p[1].remove_graph()
             p[0] = p[1]
         elif len(p) == 4:
-            p[0] = Node("=", [p[1], p[3]])
+            p[0] = Node("=")
             p[0].variables = p[1].variables
 
         p[0].extraVals = p[-1].extraVals
         for val in p[0].extraVals:
-            p[0].addTypeInDict(val)
+            p[0].append_dict(val)
 
         for var_name in p[0].variables:
             if p[0].variables[var_name] and p[0].variables[var_name][-1] in [
@@ -2122,7 +6170,10 @@ class Parser:
                         var_name, "vars", found["vars"], p.lineno(1)
                     )
                     self.symtab.modify_symbol(
-                        var_name, "identifier_type", found["identifier_type"], p.lineno(1)
+                        var_name,
+                        "identifier_type",
+                        found["identifier_type"],
+                        p.lineno(1),
                     )
                     self.symtab.modify_symbol(
                         var_name, "data_type", p[0].variables[var_name], p.lineno(1)
@@ -2132,9 +6183,18 @@ class Parser:
                     var_name, "data_type", p[0].variables[var_name], p.lineno(1)
                 )
 
-            # updating sizes
             if p[0].variables[var_name]:
-                # handling arrays
+                is_global = self.symtab.is_global(var_name)
+                if is_global:
+                    self.symtab.modify_symbol(
+                        var_name, "variable_scope", "Global", p.lineno(1)
+                    )
+                else:
+                    self.symtab.modify_symbol(
+                        var_name, "variable_scope", "Local", p.lineno(1)
+                    )
+
+            if p[0].variables[var_name]:
                 multiplier = 1
                 for type_name in p[0].variables[var_name]:
                     if type_name[0] == "[" and type_name[-1] == "]":
@@ -2147,75 +6207,92 @@ class Parser:
                     self.symtab.modify_symbol(
                         var_name,
                         "allocated_size",
-                        multiplier * sizes["ptr"],
+                        multiplier * datatype_size["ptr"],
                         p.lineno(1),
                     )
+
                 elif "struct" in p[0].variables[var_name]:
-                    struct_size = 0
-                    found, entry = self.symtab.return_sym_tab_entry(var_name, p.lineno(1))
-                    if found:
-                        for var in found["vars"]:
-                            struct_size += found["vars"][var]["allocated_size"]
-                    self.symtab.modify_symbol(
-                        var_name,
-                        "allocated_size",
-                        multiplier * struct_size,
-                        p.lineno(1),
-                    )
+                    if not self.symtab.is_global("dummy"):
+                        struct_size = 0
+                        found = self.symtab.return_type_tab_entry_su(
+                            p[0].variables[var_name][-2],
+                            p[0].variables[var_name][-1],
+                            p.lineno(1),
+                        )
+                        if found:
+                            struct_size = found["allocated_size"]
+                        self.symtab.modify_symbol(
+                            var_name,
+                            "allocated_size",
+                            multiplier * struct_size,
+                            p.lineno(1),
+                        )
+                    else:
+                        print("Struct objects not allowed to be declared globally...")
+                        self.symtab.error = 1
+                        return
                 elif "union" in p[0].variables[var_name]:
-                    struct_size = 0
-                    found, entry = self.symtab.return_sym_tab_entry(var_name, p.lineno(1))
-                    if found:
-                        for var in found["vars"]:
-                            struct_size = max(
-                                found["vars"][var]["allocated_size"], struct_size
-                            )
-                    self.symtab.modify_symbol(
-                        var_name,
-                        "allocated_size",
-                        multiplier * struct_size,
-                        p.lineno(1),
-                    )
+                    if not self.symtab.is_global("dummy"):
+                        struct_size = 0
+                        found = self.symtab.return_type_tab_entry_su(
+                            p[0].variables[var_name][-2],
+                            p[0].variables[var_name][-1],
+                            p.lineno(1),
+                        )
+                        if found:
+                            struct_size = found["allocated_size"]
+                            for var in found["vars"]:
+                                found["vars"][var]["offset"] = 0
+                        self.symtab.modify_symbol(
+                            var_name,
+                            "allocated_size",
+                            multiplier * struct_size,
+                            p.lineno(1),
+                        )
+                    else:
+                        print("Union objects not allowed to be declared globally...")
+                        self.symtab.error = 1
+                        return
                 elif "float" in p[0].variables[var_name]:
                     self.symtab.modify_symbol(
                         var_name,
                         "allocated_size",
-                        multiplier * sizes["float"],
+                        multiplier * datatype_size["float"],
                         p.lineno(1),
                     )
                 elif "short" in p[0].variables[var_name]:
                     self.symtab.modify_symbol(
                         var_name,
                         "allocated_size",
-                        multiplier * sizes["short"],
+                        multiplier * datatype_size["short"],
                         p.lineno(1),
                     )
                 elif "int" in p[0].variables[var_name]:
                     self.symtab.modify_symbol(
                         var_name,
                         "allocated_size",
-                        multiplier * sizes["int"],
+                        multiplier * datatype_size["int"],
                         p.lineno(1),
                     )
                 elif "char" in p[0].variables[var_name]:
                     self.symtab.modify_symbol(
                         var_name,
                         "allocated_size",
-                        multiplier * sizes["char"],
+                        multiplier * datatype_size["char"],
                         p.lineno(1),
                     )
                 elif "bool" in p[0].variables[var_name]:
                     self.symtab.modify_symbol(
                         var_name,
                         "allocated_size",
-                        multiplier * sizes["bool"],
+                        multiplier * datatype_size["bool"],
                         p.lineno(1),
                     )
                 else:
                     self.symtab.modify_symbol(
                         var_name,
                         "allocated_size",
-                        multiplier * sizes["void"],
+                        multiplier * datatype_size["void"],
                         p.lineno(1),
                     )
 
@@ -2234,26 +6311,47 @@ class Parser:
                 if single_type[0] == "[" and single_type[-1] == "]":
                     if single_type[1:-1] == "":
                         self.symtab.error = True
-                        print(bcolors.FAIL+"Cannot have empty indices for array declarations at line"+str(entry["line"])+bcolors.ENDC)
+                        print(
+                            bcolors.FAIL
+                            + "Cannot have empty indices for array declarations at line"
+                            + str(entry["line"])
+                            + bcolors.ENDC
+                        )
                     elif int(single_type[1:-1]) <= 0:
                         self.symtab.error = True
-                        print(bcolors.FAIL+
-                            "Cannot have non-positive integers for array declarations at line"+
-                            str(entry["line"])+bcolors.ENDC
+                        print(
+                            bcolors.FAIL
+                            + "Cannot have non-positive integers for array declarations at line"
+                            + str(entry["line"])
+                            + bcolors.ENDC
                         )
 
             if len(temp2_type_list) != len(set(temp2_type_list)):
                 self.symtab.error = True
-                print(bcolors.FAIL+
-                    "variables cannot have duplicating type of declarations at line"+
-                    str(entry["line"])+bcolors.ENDC
+                print(
+                    bcolors.FAIL
+                    + "variables cannot have duplicating type of declarations at line"
+                    + str(entry["line"])
+                    + bcolors.ENDC
                 )
 
             if "unsigned" in entry["data_type"] and "signed" in entry["data_type"]:
                 self.symtab.error = True
-                print(bcolors.FAIL+
-                    "variable cannot be both signed and unsigned at line"+str(entry["line"])+bcolors.ENDC
+                print(
+                    bcolors.FAIL
+                    + "variable cannot be both signed and unsigned at line"
+                    + str(entry["line"])
+                    + bcolors.ENDC
                 )
+            elif "void" in entry["data_type"] and "*" not in entry["data_type"]:
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Cannot have a void type variable at line "
+                    + str(entry["line"])
+                    + bcolors.ENDC
+                )
+                return
             else:
                 data_type_count = 0
                 if (
@@ -2276,19 +6374,36 @@ class Parser:
                     data_type_count += 1
                 if data_type_count > 1:
                     self.symtab.error = True
-                    print(bcolors.FAIL+
-                        "Two or more conflicting data types specified for variable at line"+str(entry["line"])+bcolors.ENDC
+                    print(
+                        bcolors.FAIL
+                        + "Two or more conflicting data types specified for variable at line"
+                        + str(entry["line"])
+                        + bcolors.ENDC
                     )
 
             if len(p) == 4:
                 isArr = 0
                 for i in range(len(entry["data_type"])):
-                    if entry["data_type"][i][0] == "[" and entry["data_type"][i][-1] == "]":
+                    if (
+                        entry["data_type"][i][0] == "["
+                        and entry["data_type"][i][-1] == "]"
+                    ):
                         isArr += 1
 
                 type_list = entry["data_type"]
                 if entry["identifier_type"] == "variable":
                     p[1].is_var = 1
+
+                if set(type_list) == {"*"}:
+                    type_list = []
+
+                if "unsigned" in type_list or "signed" in type_list:
+                    if (
+                        "bool" not in type_list
+                        and "char" not in type_list
+                        and "short" not in type_list
+                    ):
+                        type_list.append("int")
 
                 p[1].type = []
                 if "int" in type_list:
@@ -2327,18 +6442,6 @@ class Parser:
                         if single_type != "float":
                             p[1].type.append(single_type)
 
-                if isArr > 0:
-                    temp_type = []
-                    temp_type.append(p[1].type[0] + " ")
-                    for i in range(isArr):
-                        temp_type[0] += "*"
-
-                    for i in range(len(p[1].type)):
-                        if i > isArr:
-                            temp_type.append(p[1].type[i])
-                    p[1].type = temp_type
-                    p[1].type.append("arr")
-
                 if "struct" in type_list:
                     p[1].type.append("struct")
                     for single_type in type_list:
@@ -2351,28 +6454,56 @@ class Parser:
                         if single_type != "union":
                             p[1].type.append(single_type)
 
+                if isArr > 0:
+                    temp_type = []
+                    temp_type.append(p[1].type[0])
+                    for i in range(isArr):
+                        temp_type[0] += " *"
+                    for i in range(len(p[1].type)):
+                        if i > isArr:
+                            temp_type.append(p[1].type[i])
+                    p[1].type = temp_type
+                    p[1].type.append("arr")
+                    for i in range(len(type_list)):
+                        if (
+                            type_list[len(type_list) - i - 1][0] == "["
+                            and type_list[len(type_list) - i - 1][-1] == "]"
+                        ):
+                            p[1].type.append(type_list[len(type_list) - i - 1])
+
+                if "void" in type_list:
+                    p[1].type.append("void")
+                    for single_type in type_list:
+                        if single_type != "void":
+                            p[1].type.append(single_type)
+
                 if "*" in type_list:
                     temp_type = []
-                    temp_type.append(p[1].type[0] + " *")
-                    for i in range(len(p[1].type)):
-                        if i >= 2:
-                            if p[1].type[i] == "*":
-                                temp_type[0] += "*"
-                            else:
-                                temp_type.append(p[1].type[i])
+                    temp_type.append(p[1].type[0])
+                    for i in range(1, len(p[1].type)):
+                        if p[1].type[i] == "*":
+                            temp_type[0] += " *"
+                        else:
+                            temp_type.append(p[1].type[i])
+
                     p[1].type = temp_type
 
                 if (
-                    p[1] == None
-                    or p[3] == None
-                    or p[1].type == None
-                    or p[3].type == None
+                    p[1] is None
+                    or p[3] is None
+                    or p[1].type is None
+                    or p[3].type is None
                 ):
                     self.symtab.error = True
-                    print(bcolors.FAIL+"Assignment cannot be performed at line " + str(p.lineno(2))+bcolors.ENDC)
+                    print(
+                        bcolors.FAIL
+                        + "Assignment cannot be performed at line "
+                        + str(p.lineno(2))
+                        + bcolors.ENDC
+                    )
                     return
 
-                if "struct" in p[1].type or "union" in p[1].type:
+                if "struct" in p[1].type[0] or "union" in p[1].type[0]:
                     p[1].vars = entry["vars"]
 
                 elif "struct *" in p[1].type or "union *" in p[1].type:
@@ -2380,21 +6511,24 @@ class Parser:
 
                 elif "struct" in p[1].type[0] or "union" in p[1].type[0]:
                     self.symtab.error = True
-                    print(bcolors.FAIL+
-                        "Multilevel pointer for structs/unions not allowed at line "
-                        + str(p.lineno(2))+bcolors.ENDC
+                    print(
+                        bcolors.FAIL
+                        + "Multilevel pointer for structs/unions not allowed at line "
+                        + str(p.lineno(2))
+                        + bcolors.ENDC
                     )
 
                 if "struct" in p[1].type and "struct" not in p[3].type:
                     self.symtab.error = 1
-                    print(bcolors.FAIL+
-                        "Cannot assign non-struct value "
+                    print(
+                        bcolors.FAIL
+                        + "Cannot assign non-struct value "
                         + str(p[3].type)
                         + " to struct type "
                         + str(p[1].type)
                         + " at line "
                         + str(p.lineno(2))
-                        +bcolors.ENDC
+                        + bcolors.ENDC
                     )
 
                 elif (
@@ -2403,17 +6537,24 @@ class Parser:
                     and p[1].type[1] != p[3].type[1]
                 ):
                     self.symtab.error = 1
-                    print(bcolors.FAIL+"Incompatible struct types at line " + str(p.lineno(2))+bcolors.ENDC)
+                    print(
+                        bcolors.FAIL
+                        + "Incompatible struct types at line "
+                        + str(p.lineno(2))
+                        + bcolors.ENDC
+                    )
 
                 elif "union" in p[1].type and "union" not in p[3].type:
                     self.symtab.error = 1
-                    print(bcolors.FAIL+
-                        "Cannot assign non-union value "
+                    print(
+                        bcolors.FAIL
+                        + "Cannot assign non-union value "
                         + str(p[3].type)
                         + " to union type "
                         + str(p[1].type)
                         + " at line "
-                        + str(p.lineno(2))+bcolors.ENDC
+                        + str(p.lineno(2))
+                        + bcolors.ENDC
                     )
 
                 elif (
@@ -2422,11 +6563,26 @@ class Parser:
                     and p[1].type[1] != p[3].type[1]
                 ):
                     self.symtab.error = 1
-                    print(bcolors.FAIL+"Incompatible union types at line " + str(p.lineno(2))+bcolors.ENDC)
+                    print(
+                        bcolors.FAIL
+                        + "Incompatible union types at line "
+                        + str(p.lineno(2))
+                        + bcolors.ENDC
+                    )
 
-                elif p[1].type[0] in temp_list_aa and p[3].type[0] not in temp_list_aa:
+                elif (
+                    p[1].type != []
+                    and p[3].type != []
+                    and p[1].type[0] in temp_list_aa
+                    and p[3].type[0] not in temp_list_aa
+                ):
                     self.symtab.error = 1
-                    print(bcolors.FAIL+"Type mismatch during assignment at line " + str(p.lineno(2))+bcolors.ENDC)
+                    print(
+                        bcolors.FAIL
+                        + "Type mismatch during assignment at line "
+                        + str(p.lineno(2))
+                        + bcolors.ENDC
+                    )
 
                 elif (
                     p[1].type[0] not in temp_list_aa
@@ -2434,49 +6590,194 @@ class Parser:
                     and p[3].type[0] in temp_list_aa
                 ):
                     self.symtab.error = 1
-                    print(bcolors.FAIL+"Type mismatch during assignment at line " + str(p.lineno(2))+bcolors.ENDC)
+                    print(
+                        bcolors.FAIL
+                        + "Type mismatch during assignment at line "
+                        + str(p.lineno(2))
+                        + bcolors.ENDC
+                    )
 
                 elif "arr" in p[1].type and "init_list" not in p[3].type:
                     self.symtab.error = 1
-                    print(bcolors.FAIL+"Invalid array initialization at line " + str(p.lineno(2))+bcolors.ENDC)
+                    print(
+                        bcolors.FAIL
+                        + "Invalid array initialization at line "
+                        + str(p.lineno(2))
+                        + bcolors.ENDC
+                    )
 
                 elif (
                     "arr" not in p[1].type
                     and p[1].type[0][-1] == "*"
                     and p[3].type[0] not in temp_list_ii
+                    and p[3].type[0][-1] != "*"
+                    and "str" not in p[3].type
                 ):
                     self.symtab.error = 1
-                    print(bcolors.FAIL+
-                        "Assignment between pointer and "
+                    print(
+                        bcolors.FAIL
+                        + "Assignment between pointer and "
                         + str(p[3].type)
                         + " at line "
                         + str(p.lineno(2))
-                        + "is incompatible"+bcolors.ENDC
+                        + "is incompatible"
+                        + bcolors.ENDC
                     )
 
                 p[0].type = p[1].type
+                if p[0].type is None:
+                    p[0].type = []
 
                 isIn = True
                 for single_type in p[0].type:
                     if single_type not in p[3].type:
                         isIn = False
-                if isIn == False:
+                if (
+                    isIn == False
+                    and "arr" not in p[1].type
+                    and "init_list" not in p[3].type
+                ):
                     p[3].totype = p[0].type
+                    p3str = "to"
+                    for single_type in p[0].type:
+                        p3str += "_" + single_type
+                    p3str = p3str.replace(" ", "_")
+                    if "*" == p[0].type[0][-1]:
+                        p3str = "to_int_unsigned"
+                    p3 = Node(p3str, [p[3]])
+
+                else:
+                    p3 = p[3]
+                p[0].insert_edge([p[1], p3])
 
                 if "struct" in p[0].type:
-                    p[0].label += "struct"
+                    p[0].label += "_struct"
                 elif "union" in p[0].type:
-                    p[0].label += "union"
-                elif p[0].type[0][-1] == "*" and "arr" not in p[0].type:
-                    p[0].label += "int unsigned"
-                elif p[0].type[0][-1] == "*" and "arr" in p[0].type:
-                    p[0].label += p[0].type[0] + " arr"
+                    p[0].label += "_union"
+                elif (
+                    len(p[0].type) > 0
+                    and p[0].type[0][-1] == "*"
+                    and "arr" not in p[0].type
+                ):
+                    p[0].label += "_int unsigned"
                 else:
-                    p[0].label += p[0].type[0]
+                    p[0].label += "_" + p[0].type[0]
                     if "unsigned" in p[0].type:
-                        p[0].label += " unsigned"
-
+                        p[0].label += "_unsigned"
+                p[0].label = p[0].label.replace(" ", "_")
                 p[0].node.attr["label"] = p[0].label
+
+        if self.symtab.error:
+            return
+
+        for var_name in p[0].variables:
+            if (
+                "struct" in p[0].variables[var_name]
+                and "*" not in p[0].variables[var_name]
+            ):
+                found, entry = self.symtab.return_sym_tab_entry(var_name, p.lineno(1))
+                if found and found["variable_scope"] == "Local":
+                    for var in found["vars"]:
+                        found["vars"][var][
+                            "temp"
+                        ] = f'-{-found["vars"][var]["offset"] + self.symtab.offset}(%ebp)'
+            elif (
+                "union" in p[0].variables[var_name]
+                and "*" not in p[0].variables[var_name]
+            ):
+                found, entry = self.symtab.return_sym_tab_entry(var_name, p.lineno(1))
+                if found and found["variable_scope"] == "Local":
+                    for var in found["vars"]:
+                        found["vars"][var]["temp"] = f"-{self.symtab.offset}(%ebp)"
+            found, entry = self.symtab.return_sym_tab_entry(var_name)
+            if found["variable_scope"] == "Local":
+
+                if found["offset"] > 0:
+                    self.symtab.modify_symbol(
+                        var_name,
+                        "temp",
+                        f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                    )
+                else:
+                    self.symtab.modify_symbol(
+                        var_name,
+                        "temp",
+                        f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                    )
+            p[0].temp = found["temp"]
+        if len(p) == 4:
+            if self.symtab.error:
+                return
+            if (
+                p[3].totype is not None
+                and p[3].totype != p[3].type
+                and "init_list" not in p[3].type
+                and "arr" not in p[3].totype
+            ):
+                p3.temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p3.temp, 0)
+                self.symtab.modify_symbol(p3.temp, "data_type", p[3].totype)
+                self.symtab.modify_symbol(p3.temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[3].totype, p3.temp)
+                if self.symtab.is_global(p3.temp):
+                    self.symtab.modify_symbol(p3.temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p3.temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p3.temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p3.temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p3.temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p3.temp = found["temp"]
+                currtype = []
+                for single_type in p[3].type:
+                    if (
+                        single_type != "arr"
+                        and single_type[0] != "["
+                        and single_type[-1] != "]"
+                    ):
+                        currtype.append(single_type)
+                cstr = "," + " ".join(currtype).replace(" ", "_")
+                self.three_address_code.emit(
+                    "cast",
+                    p3.temp,
+                    p[3].temp,
+                    " ".join(p[3].totype).replace(" ", "_") + cstr,
+                )
+            else:
+                p3.temp = p[3].temp
+            if self.symtab.is_global():
+                print("Cannot initialize global variables while declaring")
+                self.symtab.error = 1
+                return
+            else:
+                self.equate(p[1].type, p[0].label, p[0].temp, p3.temp)
+        if len(p) == 2:
+            for var_name in p[0].variables:
+                if self.symtab.is_global():
+                    found, entry = self.symtab.return_sym_tab_entry(var_name)
+                    self.three_address_code.global_variables.append(
+                        [p[1].temp, found["allocated_size"]]
+                    )
+                    found, entry = self.symtab.return_sym_tab_entry(var_name)
+                    found["temp"] = (
+                        found["temp"] + "." + str(self.three_address_code.staticCounter)
+                    )
+                    self.three_address_code.staticCounter += 1
+                    self.three_address_code.staticSymbols.append(
+                        [found["temp"], None, found["allocated_size"]]
+                    )
 
     def p_type_specifier(self, p):
         """type_specifier : VOID
@@ -2511,7 +6812,7 @@ class Parser:
             p[0].line = p.lineno(1)
 
     def p_struct_or_union_specifier(self, p):
-        """struct_or_union_specifier : struct_or_union IDENTIFIER '{' structMarker1 struct_declaration_list '}' structMarker0
+        """struct_or_union_specifier : struct_or_union IDENTIFIER '{' marker_struct_1 struct_declaration_list '}' marker_struct_0
         | struct_or_union IDENTIFIER
         """
         if self.error:
@@ -2520,6 +6821,7 @@ class Parser:
         p[0].type += [p[2]["lexeme"]]
 
         if len(p) == 8:
+            p2val = p[2]["lexeme"]
             p[2] = Node(str([p[2]["lexeme"]]))
 
             p[0].node.attr["label"] = p[0].node.attr["label"] + "{}"
@@ -2527,46 +6829,59 @@ class Parser:
 
             if (p[2] is not None) and (p[2].node is not None):
                 if (p[5] is not None) and (p[5].node is not None):
-                    graph.add_edge(p[0].node, p[2].node)
-                    graph.add_edge(p[0].node, p[5].node)
-
-                    graph.add_edge(p[2].node, p[5].node, style="invis")
-                    graph.add_subgraph(p[2].node, p[5].node, rank="same")
-                    p[0].children.append(p[2])
-                    p[0].children.append(p[5])
+                    p[0].insert_edge([p[2], p[5]])
                 else:
-                    graph.add_edge(p[0].node, p[2].node)
-                    p[0].children.append(p[2])
+                    p[0].insert_edge([p[2]])
             else:
                 if (p[5] is not None) and (p[5].node is not None):
-                    graph.add_edge(p[0].node, p[5].node)
-                    p[0].children.append(p[5])
+                    p[0].insert_edge([p[5]])
+
+            data_struct_found = self.symtab.return_type_tab_entry_su(
+                p2val, p[1].type[0], p.lineno(1)
+            )
+            struct_size = 0
+            for var in data_struct_found["vars"]:
+                if "allocated_size" in data_struct_found["vars"][var].keys():
+                    if p[1].type[0] == "struct":
+                        struct_size += data_struct_found["vars"][var]["allocated_size"]
+                    else:
+                        struct_size = max(
+                            struct_size,
+                            data_struct_found["vars"][var]["allocated_size"],
+                        )
+
+            self.symtab.modify_symbol_su(
+                p2val, "allocated_size", struct_size, p.lineno(1), 1
+            )
+            strrr = str(p[1].type[0]) + " " + str(p2val)
+            datatype_size[strrr] = struct_size
 
         elif len(p) == 3:
             pval = p[2]["lexeme"]
             p[2] = Node(str(pval))
             if (
-                self.symtab.return_type_tab_entry_su(p[2].label, p[0].label, p.lineno(2))
+                self.symtab.return_type_tab_entry_su(
+                    p[2].label, p[0].label, p.lineno(2)
+                )
                 is None
             ):
                 self.symtab.error = True
             else:
                 p[0].extraVals.append(pval)
                 p[0].extraVals.append(p[1].label)
-                graph.add_edge(p[0].node, p[2].node)
-                p[0].children.append(p[2])
+                p[0].insert_edge([p[2]])
 
-    def p_structMarker0(self, p):
+    def p_marker_struct_0(self, p):
         """
-        structMarker0 :
+        marker_struct_0 :
         """
         if self.error:
             return
         self.symtab.flag = 0
 
-    def p_structMarker1(self, p):
+    def p_marker_struct_1(self, p):
         """
-        structMarker1 :
+        marker_struct_1 :
         """
         if self.error:
             return
@@ -2575,7 +6890,6 @@ class Parser:
         type_name = p[-3].label.upper()
         line_num = p[-2]["additional"]["line"]
         self.symtab.insert_symbol(identity, line_num, type_name)
-
         self.symtab.flag = 2
 
     def p_struct_or_union(self, p):
@@ -2599,15 +6913,15 @@ class Parser:
         elif len(p) == 3:
             p[0] = p[2]
             if (p[1] is not None) and (p[1].node is not None):
-                graph.add_edge(p[0].node, p[1].node)
-                p[0].children.append(p[1])
+                p[0].insert_edge([p[1]])
 
     def p_struct_declaration(self, p):
         """struct_declaration : specifier_qualifier_list struct_declarator_list ';'"""
         if self.error:
             return
-        p[0] = Node("StructORUnionDeclaration", [p[1], p[2]])
-
+        p[0] = Node("struct_union_declaration", [p[1], p[2]])
+        if p[1].type is None:
+            p[1].type = []
         temp_list = []
         for i in p[1].type:
             if i != "*":
@@ -2616,15 +6930,21 @@ class Parser:
         length = len(set(temp_list))
         if len(temp_list) != length:
             self.symtab.error = True
-            print(bcolors.FAIL+
-                "Structure variable cannot have duplicating type of declarations at line "+
-                str(p.lineno(3))+bcolors.ENDC
+            print(
+                bcolors.FAIL
+                + "Structure variable cannot have duplicating type of declarations at line "
+                + str(p.lineno(3))
+                + bcolors.ENDC
             )
+            return
 
         if "signed" in p[1].type and "unsigned" in p[1].type:
             self.symtab.error = True
-            print(bcolors.FAIL+
-                "Function type cannot be both signed and unsigned at line "+str(p.lineno(3))+bcolors.ENDC
+            print(
+                bcolors.FAIL
+                + "Function type cannot be both signed and unsigned at line "
+                + str(p.lineno(3))
+                + bcolors.ENDC
             )
 
         else:
@@ -2650,17 +6970,21 @@ class Parser:
 
             if count > 1:
                 self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Two or more conflicting data types specified for function at line "+
-                    str(p.lineno(3))+bcolors.ENDC,
+                print(
+                    bcolors.FAIL
+                    + "There have been 2 or more conflicting data types specified for a variable at Line No.: "
+                    + str(p.lineno(3))
+                    + bcolors.ENDC,
                 )
 
         if "union" in p[1].type[0] or "struct" in p[1].type[0]:
             self.symtab.error = True
-            print(bcolors.FAIL+
-                "Nested structures/unions at line number "
+            print(
+                bcolors.FAIL
+                + "Nested structures/unions at line number "
                 + str(p.lineno(3))
-                + " not supported"+bcolors.ENDC
+                + " not supported"
+                + bcolors.ENDC
             )
 
     def p_specifier_qualifier_list(self, p):
@@ -2677,8 +7001,7 @@ class Parser:
             for i in p[2].type:
                 p[0].type.append(i)
             if (p[2] is not None) and (p[2].node is not None):
-                graph.add_edge(p[0].node, p[2].node)
-                p[0].children.append(p[2])
+                p[2].insert_edge([p[2]])
                 p[0].extraVals += p[2].extraVals
 
     def p_struct_declarator_list(self, p):
@@ -2701,10 +7024,7 @@ class Parser:
         p[0].extraVals = p[-2].extraVals
 
     def p_struct_declarator(self, p):
-        """struct_declarator : declarator
-        | ':' constant_expression
-        | declarator ':' constant_expression
-        """
+        """struct_declarator : declarator"""
         if self.error:
             return
         if len(p) == 2:
@@ -2718,11 +7038,13 @@ class Parser:
         p[0].extraVals = p[-1].extraVals
 
         for value in p[0].extraVals:
-            p[0].addTypeInDict(value)
+            p[0].append_dict(value)
 
         for name in p[0].variables.keys():
-            self.symtab.modify_symbol(name, "data_type", p[0].variables[name], p.lineno(0))
-            self.symtab.modify_symbol(name, "varclass", "Struct Local", p.lineno(0))
+            self.symtab.modify_symbol(
+                name, "data_type", p[0].variables[name], p.lineno(0)
+            )
+            self.symtab.modify_symbol(name, "variable_scope", "Local", p.lineno(0))
 
             if p[0].variables[name]:
                 hold = 1
@@ -2734,32 +7056,94 @@ class Parser:
 
                 if "*" in p[0].variables[name]:
                     self.symtab.modify_symbol(
-                        name, "allocated_size", hold * sizes["ptr"], p.lineno(0)
+                        name, "allocated_size", hold * datatype_size["ptr"], p.lineno(0)
                     )
+                elif "struct" in p[0].variables[name]:
+                    struct_size = 0
+                    found = self.symtab.return_type_tab_entry_su(
+                        p[0].variables[name][-2], p[0].variables[name][-1], p.lineno(1)
+                    )
+                    if found:
+                        if "allocated_size" in found.keys():
+                            struct_size = found["allocated_size"]
+                        else:
+                            struct_size = 0
+                            print(
+                                bcolors.FAIL
+                                + "Defining object of the same struct within itself isn't allowed."
+                                + bcolors.ENDC
+                            )
+
+                            self.symtab.error = 1
+                        self.symtab.modify_symbol(
+                            name, "allocated_size", hold * struct_size, p.lineno(1)
+                        )
+                    else:
+                        self.symtab.error = 1
+                elif "union" in p[0].variables[name]:
+                    struct_size = 0
+                    found = self.symtab.return_type_tab_entry_su(
+                        p[0].variables[name][-2], p[0].variables[name][-1], p.lineno(1)
+                    )
+                    if found:
+                        if found and "allocated_size" in found.keys():
+                            struct_size = found["allocated_size"]
+                            for var in found["vars"]:
+                                found["vars"][var]["offset"] = 0
+                        else:
+                            struct_size = 0
+                            print(
+                                bcolors.FAIL
+                                + "Defining object of the same union within itself isn't allowed."
+                                + bcolors.ENDC
+                            )
+                            self.symtab.error = 1
+                        self.symtab.modify_symbol(
+                            name, "allocated_size", hold * struct_size, p.lineno(1)
+                        )
+                    else:
+                        self.symtab.error = 1
                 elif "float" in p[0].variables[name]:
                     self.symtab.modify_symbol(
-                        name, "allocated_size", hold * sizes["float"], p.lineno(0)
+                        name,
+                        "allocated_size",
+                        hold * datatype_size["float"],
+                        p.lineno(0),
                     )
                 elif "short" in p[0].variables[name]:
                     self.symtab.modify_symbol(
-                        name, "allocated_size", hold * sizes["short"], p.lineno(0)
+                        name,
+                        "allocated_size",
+                        hold * datatype_size["short"],
+                        p.lineno(0),
                     )
                 elif "int" in p[0].variables[name]:
                     self.symtab.modify_symbol(
-                        name, "allocated_size", hold * sizes["int"], p.lineno(0)
+                        name, "allocated_size", hold * datatype_size["int"], p.lineno(0)
                     )
                 elif "char" in p[0].variables[name]:
                     self.symtab.modify_symbol(
-                        name, "allocated_size", hold * sizes["char"], p.lineno(0)
+                        name,
+                        "allocated_size",
+                        hold * datatype_size["char"],
+                        p.lineno(0),
                     )
                 elif "bool" in p[0].variables[name]:
                     self.symtab.modify_symbol(
-                        name, "allocated_size", hold * sizes["bool"], p.lineno(0)
+                        name,
+                        "allocated_size",
+                        hold * datatype_size["bool"],
+                        p.lineno(0),
                     )
                 else:
                     self.symtab.modify_symbol(
-                        name, "allocated_size", hold * sizes["void"], p.lineno(0)
+                        name,
+                        "allocated_size",
+                        hold * datatype_size["void"],
+                        p.lineno(0),
                     )
+            else:
+                self.symtab.modify_symbol(name, "allocated_size", 0, p.lineno(0))
 
     def p_declarator(self, p):
         """declarator : pointer direct_declarator
@@ -2773,7 +7157,8 @@ class Parser:
             p[0] = Node("Declarator", [p[1], p[2]])
             p[0].variables = p[2].variables
             for value in p[1].extraVals:
-                p[0].addTypeInDict(value)
+                p[0].append_dict(value)
+            p[0].temp = p[2].temp
 
     def p_function_declarator(self, p):
         """function_declarator : pointer direct_declarator
@@ -2788,24 +7173,16 @@ class Parser:
             p[0].variables = p[2].variables
             p[0].extraVals += p[1].extraVals
 
-    def p_direct_declarator(self, p):
-        """direct_declarator    : IDENTIFIER
+    def p_direct_declarator_1(self, p):
+        """direct_declarator : identifier
         | '(' declarator ')'
-        | direct_declarator '[' IntegerConst ']'
         | direct_declarator '[' ']'
-        | direct_declarator '(' FunctionPushMarker parameter_type_list ')'
-        | direct_declarator '(' identifier_list ')'
-        | direct_declarator '(' FunctionPushMarker ')'
         """
         if self.error:
             return
 
         if len(p) == 2:
-            p[0] = Node(str(p[1]["lexeme"]))
-            p[0].variables[p[0].label] = []
-            p[0].is_var = 1
-            self.symtab.insert_symbol(p[1]["lexeme"], p[1]["additional"]["line"])
-            self.symtab.modify_symbol(p[1]["lexeme"], "identifier_type", "variable")
+            p[0] = p[1]
 
         elif len(p) == 4:
             if p[1] == "(":
@@ -2813,7 +7190,7 @@ class Parser:
             elif p[2] == "[":
                 p[0] = Node("DirectDeclaratorArraySubscript", [p[1]])
                 p[0].variables = p[1].variables
-                p[0].addTypeInDict("[]")
+                p[0].append_dict("[]")
 
                 try:
                     p[0].arrs = []
@@ -2821,32 +7198,51 @@ class Parser:
                     p[0].arrs = []
                 p[0].arrs.append("empty")
 
-        elif len(p) == 5:
-            if p[2] == "(":
-                if p[3] == None:
-                    p[0] = Node("DirectDeclaratorFunctionCall", [p[1]])
-                    p[0].variables = p[1].variables
-                    p[0].addTypeInDict("Function Name")
-                else:
-                    p[0] = Node("DirectDeclaratorFunctionCallWithIdList", [p[1], p[3]])
+    def p_direct_declarator_2(self, p):
+        """direct_declarator : direct_declarator '[' IntegerConst ']'
+        | direct_declarator '(' marker_function_push ')'
+        """
+        if self.error:
+            return
 
-            elif p[2] == "[":
-                p[0] = Node("DirectDeclaratorArraySubscript", [p[1], p[3]])
-                store = "[" + str(p[3].label) + "]"
+        if p[2] == "(":
+            if p[3] is None:
+                p[0] = Node("DirectDeclaratorFunctionCall", [p[1]])
                 p[0].variables = p[1].variables
-                p[0].addTypeInDict(store)
+                p[0].append_dict("Function Name")
+            else:
+                p[0] = Node("DirectDeclaratorFunctionCallWithIdList", [p[1], p[3]])
 
-        elif len(p) == 6:
-            p[0] = Node("DirectDeclaratorFunctionCall", [p[1], p[4]])
-            p[0].variables = p[4].variables
-            p[0].variables[p[1].label] = ["Function Name"]
+        elif p[2] == "[":
+            p[0] = Node("DirectDeclaratorArraySubscript", [p[1], p[3]])
+            store = "[" + str(p[3].label) + "]"
+            p[0].variables = p[1].variables
+            p[0].append_dict(store)
 
-    def p_FunctionPushMarker(self, p):
-        """FunctionPushMarker :"""
+    def p_direct_declarator_3(self, p):
+        """direct_declarator : direct_declarator '(' marker_function_push parameter_type_list ')'"""
+        if self.error:
+            return
+
+        p[0] = Node("DirectDeclaratorFunctionCall", [p[1], p[4]])
+        for variable in p[4].variables:
+            if variable == p[1].label:
+                self.symtab.error = 1
+                self.error = 1
+                print(
+                    bcolors.FAIL
+                    + f"Cannot have function parameter with same name as function at line {p.lineno(2)}"
+                )
+                return
+        p[0].variables = p[4].variables
+        p[0].variables[p[1].label] = ["Function Name"]
+
+    def p_marker_function_push(self, p):
+        """marker_function_push :"""
         if self.error:
             return
         p[0] = None
-        self.symtab.push_scope()
+        self.symtab.push_scope(self.three_address_code)
         self.symtab.offset = 0
 
     def p_pointer(self, p):
@@ -2900,41 +7296,16 @@ class Parser:
             p[0].variables = {**p[1].variables, **p[3].variables}
 
     def p_parameter_declaration(self, p):
-        """parameter_declaration : declaration_specifiers declarator
-        | declaration_specifiers abstract_declarator
-        | declaration_specifiers
-        """
+        """parameter_declaration : declaration_specifiers declarator"""
         if self.error:
             return
-        if len(p) == 2:
-            p[0] = Node("ParDeclWithoutDeclarator", [p[1]])
-        else:
-            if str(p.slice[2]) == "declarator":
-                p[0] = Node("ParDecl", [p[1], p[2]], create_ast=False)
-                p[0].variables = p[2].variables
-                p[1].remove_graph()
-                p[2].remove_graph()
+        p[0] = Node("ParDecl", [p[1], p[2]], create_ast=False)
+        p[0].variables = p[2].variables
+        p[1].remove_graph()
+        p[2].remove_graph()
 
-                for val in p[1].extraVals:
-                    p[0].addTypeInDict(val)
-
-            else:
-                p[0] = Node("ParDecl", [p[1], p[2]], create_ast=False)
-                p[1].remove_graph()
-                p[2].remove_graph()
-
-    def p_identifier_list(self, p):
-        """identifier_list : IDENTIFIER
-        | identifier_list ',' IDENTIFIER
-        """
-        if self.error:
-            return
-        if len(p) == 2:
-            p[0] = Node(str(p[1]["lexeme"]))
-        else:
-            p3val = p[3]["lexeme"]
-            p[3] = Node(str(p3val))
-            p[0] = Node(",", [p[1], p[3]])
+        for val in p[1].extraVals:
+            p[0].append_dict(val)
 
     def p_type_name(self, p):
         """type_name : specifier_qualifier_list
@@ -3012,6 +7383,7 @@ class Parser:
                 p[0] = Node("DirectAbstractDeclarator[]", [p[1], p[3]])
 
     # Statements
+
     def p_statement(self, p):
         """
         statement   : labeled_statement
@@ -3025,31 +7397,62 @@ class Parser:
             return
         p[0] = p[1]
 
-    def p_labeled_statement(self, p):
+    def p_labeled_statement_2(self, p):
         """
-        labeled_statement   : IDENTIFIER ':' statement
-                            | CASE constant_expression ':' statement
-                            | DEFAULT ':' statement
+        labeled_statement : marker_case_1 CASE constant_expression marker_case_2 ':' statement
         """
         if self.error:
             return
+        p[0] = Node("CASE:", [p[3], p[6]])
+        p[0].numdef = p[6].numdef
+        if self.symtab.error:
+            return
+        p[0].break_list = p[6].break_list
+        p[0].next_list = p[6].next_list
+        p[0].test_list.append([p[3].temp, p[1].quadruples, p[4].quadruples])
 
-        if len(p) == 4:
-            if p[1] == "default":
-                p[0] = Node("DEFAULT:", [p[3]])
-            else:
-                p1val = p[1]["lexeme"]
-                p[1] = Node(str(p1val))
-                p[0] = Node("IDENTIFIER:", [p[1], p[3]])
-        else:
-            p[0] = Node("CASE:", [p[2], p[4]])
+    def p_labeled_statement_3(self, p):
+        """
+        labeled_statement : marker_case_1 DEFAULT ':' statement
+        """
+        if self.error:
+            return
+        p[0] = Node("DEFAULT:", [p[4]])
+        p[0].numdef = 1 + p[4].numdef
+        if self.symtab.error:
+            return
+        p[0].break_list = p[4].break_list
+        p[0].next_list = p[4].next_list
+        p[0].test_list.append([None, p[1].quadruples, None])
+
+    def p_marker_case_1(self, p):
+        """
+        marker_case_1 :
+        """
+        if self.error:
+            return
+        p[0] = Node("", create_ast=False)
+        if self.symtab.error:
+            return
+        p[0].quadruples = self.three_address_code.next_statement
+
+    def p_marker_case_2(self, p):
+        """
+        marker_case_2 :
+        """
+        if self.error:
+            return
+        p[0] = Node("", create_ast=False)
+        if self.symtab.error:
+            return
+        p[0].quadruples = self.three_address_code.next_statement
 
     def p_compound_statement(self, p):
         """
         compound_statement  : '{' marker_compound_statement_push '}' marker_compound_statement_pop
                             | '{' marker_compound_statement_push statement_list '}' marker_compound_statement_pop
                             | '{' marker_compound_statement_push declaration_list '}' marker_compound_statement_pop
-                            | '{' marker_compound_statement_push declaration_list statement_list '}' marker_compound_statement_pop
+                            | '{' marker_compound_statement_push declaration_list marker_global statement_list '}' marker_compound_statement_pop
         """
         if self.error:
             return
@@ -3057,8 +7460,102 @@ class Parser:
             p[0] = Node("EmptySCOPE", create_ast=False)
         elif len(p) == 6:
             p[0] = Node("SCOPE", [p[3]])
-        elif len(p) == 7:
-            p[0] = Node("SCOPE", [Node(";", [p[3], p[4]])])
+            if self.symtab.error:
+                return
+            p[0].numdef = p[3].numdef
+            p[0].true_list = p[3].true_list
+            p[0].false_list = p[3].false_list
+            p[0].break_list = p[3].break_list
+            p[0].continuelist = p[3].continuelist
+            p[0].next_list = p[3].next_list
+            p[0].test_list = p[3].test_list
+        elif len(p) == 8:
+            p[0] = Node(";", [p[3], p[5]])
+            if self.symtab.error:
+                return
+            if p[3] is not None and p[5] is not None:
+                p[0].numdef = p[3].numdef + p[5].numdef
+            self.three_address_code.backpatch(p[3].next_list, p[4].quadruples)
+            if p[3] != None:
+                p[0].break_list = p[3].break_list + p[5].break_list
+                p[0].continuelist = p[3].continuelist + p[5].continuelist
+                p[0].next_list = p[5].next_list
+                p[0].test_list = p[3].test_list + p[5].test_list
+            else:
+                p[0].break_list = p[3].break_list
+                p[0].continuelist = p[3].continuelist
+                p[0].test_list = p[3].test_list
+            p[0] = Node("SCOPE", [p[0]])
+
+    def p_statement_list(self, p):
+        """
+        statement_list  : statement
+                        | statement_list marker_global statement
+        """
+        if self.error:
+            return
+        if len(p) == 2:
+            p[0] = p[1]
+            if p[1] is not None:
+                p[0].numdef = p[1].numdef
+            if p[1] != None and not self.symtab.error:
+                p[0].true_list = p[1].true_list
+                p[0].false_list = p[1].false_list
+                p[0].break_list = p[1].break_list
+                p[0].continuelist = p[1].continuelist
+                p[0].next_list = p[1].next_list
+                p[0].test_list = p[1].test_list
+        elif len(p) == 4:
+            p[0] = Node(";", [p[1], p[3]])
+            if self.symtab.error:
+                return
+            if p[1] is not None and p[3] is not None:
+                p[0].numdef = p[1].numdef + p[3].numdef
+            self.three_address_code.backpatch(p[1].next_list, p[2].quadruples)
+            if p[3] != None:
+                p[0].break_list = p[1].break_list + p[3].break_list
+                p[0].continuelist = p[1].continuelist + p[3].continuelist
+                p[0].next_list = p[3].next_list
+                p[0].test_list = p[1].test_list + p[3].test_list
+            else:
+                p[0].break_list = p[1].break_list
+                p[0].continuelist = p[1].continuelist
+                p[0].test_list = p[1].test_list
+
+    def p_declaration_list(self, p):
+        """
+        declaration_list    : declaration
+                            | declaration_list marker_global declaration
+        """
+        if self.error:
+            return
+        if len(p) == 2:
+            p[0] = p[1]
+            if p[1] is not None:
+                p[0].numdef = p[1].numdef
+            if p[1] != None and not self.symtab.error:
+                p[0].true_list = p[1].true_list
+                p[0].false_list = p[1].false_list
+                p[0].break_list = p[1].break_list
+                p[0].continuelist = p[1].continuelist
+                p[0].next_list = p[1].next_list
+                p[0].test_list = p[1].test_list
+        elif len(p) == 4:
+            p[0] = Node(";", [p[1], p[3]])
+            if self.symtab.error:
+                return
+            if p[1] is not None and p[3] is not None:
+                p[0].numdef = p[1].numdef + p[3].numdef
+            self.three_address_code.backpatch(p[1].next_list, p[2].quadruples)
+            if p[3] != None:
+                p[0].break_list = p[1].break_list + p[3].break_list
+                p[0].continuelist = p[1].continuelist + p[3].continuelist
+                p[0].next_list = p[3].next_list
+                p[0].test_list = p[1].test_list + p[3].test_list
+            else:
+                p[0].break_list = p[1].break_list
+                p[0].continuelist = p[1].continuelist
+                p[0].test_list = p[1].test_list
 
     def p_marker_compound_statement_push(self, p):
         """
@@ -3066,7 +7563,7 @@ class Parser:
         """
         if self.error:
             return
-        self.symtab.push_scope()
+        self.symtab.push_scope(self.three_address_code)
 
     def p_marker_compound_statement_pop(self, p):
         """
@@ -3074,44 +7571,51 @@ class Parser:
         """
         if self.error:
             return
-        self.symtab.pop_scope()
+        self.symtab.pop_scope(self.three_address_code)
 
     def p_block_item_list(self, p):
         """
-        block_item_list : statement_list
-                        | declaration_list
-                        | declaration_list statement_list
+        block_item_list : block_item
+                        | block_item_list marker_global block_item
         """
         if self.error:
             return
         if len(p) == 2:
-            p[0] = p[1]
-        elif len(p) == 3:
-            p[0] = Node(";", [p[1], p[2]])
+            p[0] = Node(";", [p[1]])
+            if p[1] is not None:
+                p[0].numdef = p[1].numdef
+            if p[1] != None and not self.symtab.error:
+                p[0].true_list = p[1].true_list
+                p[0].false_list = p[1].false_list
+                p[0].break_list = p[1].break_list
+                p[0].continuelist = p[1].continuelist
+                p[0].next_list = p[1].next_list
+                p[0].test_list = p[1].test_list
 
-    def p_statement_list(self, p):
-        """
-        statement_list  : statement
-                        | statement_list statement
-        """
-        if self.error:
-            return
-        if len(p) == 2:
-            p[0] = p[1]
-        elif len(p) == 3:
-            p[0] = Node(";", [p[1], p[2]])
+        elif len(p) == 4:
+            p[0] = Node(";", [p[1], p[3]])
+            if self.symtab.error:
+                return
+            if p[1] is not None and p[3] is not None:
+                p[0].numdef = p[1].numdef + p[3].numdef
+            self.three_address_code.backpatch(p[1].next_list, p[2].quadruples)
+            if p[3] != None:
+                p[0].break_list = p[1].break_list + p[3].break_list
+                p[0].continuelist = p[1].continuelist + p[3].continuelist
+                p[0].next_list = p[3].next_list
+                p[0].test_list = p[1].test_list + p[3].test_list
+            else:
+                p[0].break_list = p[1].break_list
+                p[0].continuelist = p[1].continuelist
+                p[0].test_list = p[1].test_list
 
-    def p_declaration_list(self, p):
+    def p_block_item(self, p):
         """
-        declaration_list    : declaration
-                            | declaration_list declaration
+        block_item : declaration
+                    | statement
         """
         if self.error:
             return
-        if len(p) == 2:
-            p[0] = p[1]
-        elif len(p) == 3:
-            p[0] = Node(";", [p[1], p[2]])
 
     def p_expression_statement(self, p):
         """
@@ -3127,45 +7631,219 @@ class Parser:
 
     def p_selection_statement(self, p):
         """
-        selection_statement : IF '(' expression ')' statement %prec IF_STATEMENTS
-                            | IF '(' expression ')' statement ELSE statement
-                            | SWITCH '(' expression ')' statement
+        selection_statement : IF '(' expression ')' marker_global statement marker_global_2 %prec IF_STATEMENTS
+                            | IF '(' expression ')' marker_global statement marker_global_2 ELSE marker_global statement
+                            | SWITCH '(' expression ')' marker_switch statement
         """
         if self.error:
             return
 
-        if len(p) == 6:
-            p[0] = Node(str(p[1]).upper(), [p[3], p[5]])
-        else:
-            p[0] = Node("IF-ELSE", [p[3], p[5], p[7]])
+            return
+        if len(p) == 7:
+            p[0] = Node(str(p[1]).upper(), [p[3], p[6]])
+            if p[6].numdef > 1:
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + f"Cannot have multiple default labels in a single switch statement at line {p.lineno(1)}"
+                )
+            if self.symtab.error:
+                return
+            p[0].next_list = p[6].break_list + p[6].next_list
+            p[0].next_list.append(self.three_address_code.next_statement)
+            self.three_address_code.emit("goto", "", "", "")
+            self.three_address_code.backpatch(
+                p[5].next_list, self.three_address_code.next_statement
+            )
+            for item in p[6].test_list:
+                if item[0] is not None:
+                    for i in range(item[1], item[2]):
+                        self.three_address_code.code.append(
+                            self.three_address_code.code[i]
+                        )
+                        self.three_address_code.next_statement += 1
+                    temp = self.three_address_code.create_temp_var()
+                    self.symtab.insert_symbol(temp, 0)
+                    self.symtab.modify_symbol(temp, "data_type", ["int"])
+                    self.symtab.modify_symbol(temp, "identifier_type", "TEMP")
+                    self.symtab_size_update(["int"], temp)
+                    if self.symtab.is_global(temp):
+                        self.symtab.modify_symbol(temp, "variable_scope", "Global")
+                    else:
+                        self.symtab.modify_symbol(temp, "variable_scope", "Local")
+                        found, entry = self.symtab.return_sym_tab_entry(temp)
+                        var_size = found["allocated_size"]
+                        if found["variable_scope"] == "Local":
+                            if found["offset"] > 0:
+                                self.symtab.modify_symbol(
+                                    temp,
+                                    "temp",
+                                    f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                                )
+                            else:
+                                self.symtab.modify_symbol(
+                                    temp,
+                                    "temp",
+                                    f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                                )
+                        temp = found["temp"]
+                    self.three_address_code.emit("==", temp, p[3].temp, item[0])
+                    tmplist = [self.three_address_code.next_statement]
+                    self.three_address_code.emit("ifnz goto", "", temp, "")
+                    self.three_address_code.backpatch(tmplist, item[1])
 
-    def p_iteration_statement(self, p):
+            for item in p[6].test_list:
+                if item[0] is None:
+                    tmplist = [self.three_address_code.next_statement]
+                    self.three_address_code.emit("goto", "", "", "")
+                    self.three_address_code.backpatch(tmplist, item[1])
+        elif len(p) == 8:
+            p[0] = Node("IF-ELSE", [p[3], p[6]])
+            if self.symtab.error:
+                return
+            self.three_address_code.backpatch(p[3].true_list, p[5].quadruples)
+            p[0].next_list = p[3].false_list + p[6].next_list
+            p[0].continuelist = p[6].continuelist
+            p[0].break_list = p[6].break_list
+            p[0].test_list = p[6].test_list
+        else:
+            p[0] = Node("IF-ELSE", [p[3], p[6], p[10]])
+            if self.symtab.error:
+                return
+            self.three_address_code.backpatch(p[3].true_list, p[5].quadruples)
+            self.three_address_code.backpatch(p[3].false_list, p[9].quadruples)
+            p[0].next_list = p[6].next_list + p[7].next_list + p[10].next_list
+            p[0].continuelist = p[6].continuelist + p[10].continuelist
+            p[0].break_list = p[6].break_list + p[10].break_list
+            p[0].test_list = p[6].test_list + p[10].test_list
+
+    def p_marker_switch(self, p):
         """
-        iteration_statement : WHILE '(' expression ')' statement
-                            | DO statement WHILE '(' expression ')' ';'
-                            | FOR '(' expression_statement expression_statement ')' statement
-                            | FOR '(' expression_statement expression_statement expression ')' statement
-                            | FOR '(' push_marker_loops declaration expression_statement ')' statement pop_marker_loops
-                            | FOR '(' push_marker_loops declaration expression_statement expression ')' statement pop_marker_loops
+        marker_switch :
         """
+        if self.error:
+            return
+        p[0] = Node("", create_ast=False)
+        if self.symtab.error:
+            return
+        p[0].next_list.append(self.three_address_code.next_statement)
+        self.three_address_code.emit("goto", "", "", "")
+
+    def p_marker_global_2(self, p):
+        """
+        marker_global_2 :
+        """
+        if self.error:
+            return
+        p[0] = Node("", create_ast=False)
+        if self.symtab.error:
+            return
+        p[0].next_list.append(self.three_address_code.next_statement)
+        self.three_address_code.emit("goto", "", "", "")
+
+    def p_marker_global(self, p):
+        """
+        marker_global :
+        """
+        if self.error:
+            return
+        p[0] = Node("", create_ast=False)
+        if self.symtab.error:
+            return
+        p[0].quadruples = self.three_address_code.next_statement
+
+    def p_iteration_statement_1(self, p):
+        """
+        iteration_statement : WHILE marker_global '(' expression ')' marker_global statement
+                            | DO marker_global statement WHILE '(' marker_global expression ')' ';'
+        """
+
         if True == self.error:
             return
 
-        l1 = ["FOR", "WHILE", "DO-WHILE"]
+        if len(p) == 8:
+            p[0] = Node("WHILE", [p[4], p[6]])
+            if self.symtab.error:
+                return
+            self.three_address_code.backpatch(p[7].next_list, p[2].quadruples)
+            self.three_address_code.backpatch(p[7].continuelist, p[2].quadruples)
+            self.three_address_code.backpatch(p[4].true_list, p[6].quadruples)
+            p[0].next_list = p[4].false_list + p[7].break_list
+            self.three_address_code.emit("goto", int(p[2].quadruples) + 1, "", "")
 
-        if len(p) == 10:
-            p[0] = Node(l1[0], [p[4], p[5], p[6], p[8]])
-        elif len(p) == 9:
-            p[0] = Node(l1[0], [p[4], p[5], p[7]])
-        elif len(p) == 8:
-            if p[1] == "do":
-                p[0] = Node(l1[2], [p[2], p[5]])
-            else:
-                p[0] = Node(l1[0], [p[3], p[4], p[5], p[7]])
-        elif len(p) == 7:
-            p[0] = Node(l1[0], [p[3], p[4], p[6]])
-        elif len(p) == 6:
-            p[0] = Node(l1[1], [p[3], p[5]])
+        elif len(p) == 10:
+            p[0] = Node("DO-WHILE", [p[3], p[7]])
+            if self.symtab.error:
+                return
+            self.three_address_code.backpatch(p[7].true_list, p[2].quadruples)
+            p[0].next_list = p[7].false_list + p[3].break_list
+            self.three_address_code.backpatch(p[3].next_list, p[6].quadruples)
+            self.three_address_code.backpatch(p[3].continuelist, p[6].quadruples)
+            self.three_address_code.emit("goto", p[2].quadruples + 1, "", "")
+
+    def p_iteration_statement_2(self, p):
+        """
+        iteration_statement : FOR '(' expression_statement marker_global expression_statement ')' marker_global statement
+                            | FOR '(' expression_statement marker_global expression_statement marker_global expression ')' marker_global statement
+        """
+
+        if True == self.error:
+            return
+
+        if len(p) == 9:
+            p[0] = Node("FOR", [p[3], p[5], p[8]])
+
+            if self.symtab.error:
+                return
+            self.three_address_code.backpatch(p[8].next_list, p[4].quadruples)
+            self.three_address_code.backpatch(p[8].continuelist, p[4].quadruples)
+            self.three_address_code.backpatch(p[3].true_list, p[4].quadruples)
+            self.three_address_code.backpatch(p[3].false_list, p[4].quadruples)
+            self.three_address_code.backpatch(p[5].true_list, p[7].quadruples)
+            p[0].next_list = p[8].break_list + p[5].false_list
+            self.three_address_code.emit("goto", p[4].quadruples + 1, "", "")
+
+        elif len(p) == 11:
+            p[0] = Node("FOR", [p[3], p[5], p[7], p[10]])
+            if self.symtab.error:
+                return
+            self.three_address_code.backpatch(p[3].true_list, p[4].quadruples)
+            self.three_address_code.backpatch(p[3].false_list, p[4].quadruples)
+            self.three_address_code.backpatch(p[10].next_list, p[6].quadruples)
+            self.three_address_code.backpatch(p[10].continuelist, p[6].quadruples)
+            self.three_address_code.backpatch(p[5].true_list, p[9].quadruples)
+            self.three_address_code.backpatch(p[7].true_list, p[4].quadruples)
+            self.three_address_code.backpatch(p[7].false_list, p[4].quadruples)
+            p[0].next_list = p[10].break_list + p[5].false_list
+            self.three_address_code.emit("goto", p[6].quadruples + 1, "", "")
+
+    def p_iteration_statement_3(self, p):
+        """iteration_statement : FOR '(' push_marker_loops declaration marker_global expression_statement ')' marker_global statement pop_marker_loops
+        | FOR '(' push_marker_loops declaration marker_global expression_statement marker_global expression ')' marker_global statement pop_marker_loops
+        """
+
+        if self.error:
+            return
+        if len(p) == 11:
+            p[0] = Node("FOR", [p[4], p[6], p[9]])
+            if self.symtab.error:
+                return
+            self.three_address_code.backpatch(p[6].true_list, p[8].quadruples)
+            self.three_address_code.backpatch(p[9].continuelist, p[5].quadruples)
+            self.three_address_code.backpatch(p[9].next_list, p[5].quadruples)
+            p[0].next_list = p[9].break_list + p[6].false_list
+            self.three_address_code.emit("goto", p[5].quadruples + 1, "", "")
+        else:
+            p[0] = Node("FOR", [p[4], p[6], p[8], p[11]])
+            if self.symtab.error:
+                return
+            self.three_address_code.backpatch(p[11].next_list, p[7].quadruples)
+            self.three_address_code.backpatch(p[11].continuelist, p[7].quadruples)
+            self.three_address_code.backpatch(p[6].true_list, p[10].quadruples)
+            self.three_address_code.backpatch(p[8].true_list, p[5].quadruples)
+            self.three_address_code.backpatch(p[8].false_list, p[5].quadruples)
+            p[0].next_list = p[11].break_list + p[6].false_list
+            self.three_address_code.emit("goto", p[7].quadruples + 1, "", "")
 
     def p_push_marker_loops(self, p):
         """
@@ -3174,7 +7852,7 @@ class Parser:
         if True == self.error:
             return
         else:
-            self.symtab.push_scope()
+            self.symtab.push_scope(self.three_address_code)
 
     def p_pop_marker_loops(self, p):
         """
@@ -3183,7 +7861,9 @@ class Parser:
         if True == self.error:
             return
         else:
-            self.symtab.pop_scope()
+            if self.symtab.error:
+                return
+            self.symtab.pop_scope(self.three_address_code, 1)
 
     def p_jump_statement(self, p):
         """
@@ -3197,57 +7877,273 @@ class Parser:
 
         if len(p) == 3:
             p[0] = Node(str(p[1]).upper())
-            if p[1] == "return":
+            if self.symtab.error:
+                return
+            if p[1] == "continue":
+                p[0].continuelist.append(self.three_address_code.next_statement)
+                self.three_address_code.emit("goto", "", "", "")
+            elif p[1] == "break":
+                p[0].break_list.append(self.three_address_code.next_statement)
+                self.three_address_code.emit("goto", "", "", "")
+            elif p[1] == "return":
                 found = list(self.symtab.table[0])
                 functype = self.symtab.table[0][found[-1]]["data_type"]
 
                 if functype != ["void"]:
                     self.symtab.error = True
-                    print(bcolors.FAIL+
-                        "Cannot return! Need an argument of type "
+                    print(
+                        bcolors.FAIL
+                        + "Cannot return"
                         + str(functype)
                         + " at line "
-                        + str(p.lineno(1))+bcolors.ENDC
+                        + str(p.lineno(1))
+                        + bcolors.ENDC
                     )
-
+                if self.symtab.error:
+                    return
+                self.three_address_code.emit("retq", "", "", "")
         else:
-            p[0] = Node("RETURN", [p[2]])
+            p[0] = Node("RETURN")
             found = list(self.symtab.table[0])
+            if not "data_type" in self.symtab.table[0][found[-1]].keys():
+                self.symtab.error = 1
+                return
             functype = self.symtab.table[0][found[-1]]["data_type"]
+            if functype is None:
+                functype = []
 
-            if (
+            if p[2] is None or p[2].type is None or p[2].type == []:
+                self.symtab.error = True
+                print(
+                    bcolors.FAIL
+                    + "Cannot return expression at line  "
+                    + str(p.lineno(1))
+                    + bcolors.ENDC
+                )
+
+            elif (
                 "*" in functype
+                and len(p[2].type) > 0
                 and "*" not in p[2].type[0]
                 and p[2].type[0] not in ["bool", "char", "short", "int"]
             ):
                 self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Incompatible types while returning "
+                print(
+                    bcolors.FAIL
+                    + "Incompatible types while returning "
                     + str(p[2].type)
                     + "."
                     + str(functype)
                     + " was expected at line "
-                    + str(p.lineno(1))+bcolors.ENDC
-                )
-
-            elif functype[0] in ["bool", "char", "short", "int", "float"] and p[2].type[
-                0
-            ] not in ["bool", "char", "short", "int", "float"] and not ("*" in functype
-                and "*" in p[2].type[0]):
-                self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Mismatch in type while returning value at line " + str(p.lineno(1))+bcolors.ENDC
-                )
-
-            elif functype == ["void"] and p[2].type[0] != "void":
-                self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Non void type at line number "
                     + str(p.lineno(1))
-                    + ". Cannot return."+bcolors.ENDC
+                    + bcolors.ENDC
                 )
 
-    # External declaration and function definitions
+            elif (
+                len(p[2].type) > 0
+                and len(functype) > 0
+                and functype[0] in ["bool", "char", "short", "int", "float"]
+                and p[2].type[0] not in ["bool", "char", "short", "int", "float"]
+                and p[2].type[0][-1] != "*"
+            ):
+                self.symtab.error = True
+                print(
+                    bcolors.FAIL
+                    + "Mismatch in type while returning value at line "
+                    + str(p.lineno(1))
+                    + bcolors.ENDC
+                )
+
+            elif functype == ["void"] and len(p[2].type) > 0 and p[2].type[0] != "void":
+                self.symtab.error = True
+                print(
+                    bcolors.FAIL
+                    + "Non void type at line number "
+                    + str(p.lineno(1))
+                    + ". Cannot return."
+                    + bcolors.ENDC
+                )
+
+            if self.symtab.error:
+                return
+            isarr = 0
+            type_list = functype
+            if type_list is None:
+                type_list = []
+            for i in range(len(functype)):
+                if functype[i][0] == "[" and functype[i][-1] == "]":
+                    isarr += 1
+            if "unsigned" in type_list or "signed" in type_list:
+                if (
+                    "bool" not in type_list
+                    and "char" not in type_list
+                    and "short" not in type_list
+                ):
+                    type_list.append("int")
+                p[0].type = []
+            elif "int" in type_list:
+                p[0].type.append("int")
+                for single_type in type_list:
+                    if single_type != "int":
+                        p[0].type.append(single_type)
+            elif "short" in type_list:
+                p[0].type.append("short")
+                for single_type in type_list:
+                    if single_type != "short":
+                        p[0].type.append(single_type)
+
+            elif "char" in type_list:
+                p[0].type.append("char")
+                for single_type in type_list:
+                    if single_type != "char":
+                        p[0].type.append(single_type)
+
+            elif "bool" in type_list:
+                p[0].type.append("bool")
+                for single_type in type_list:
+                    if single_type != "bool":
+                        p[0].type.append(single_type)
+
+            elif "str" in type_list:
+                p[0].type.append("str")
+                for single_type in type_list:
+                    if single_type != "str":
+                        p[0].type.append(single_type)
+
+            elif "float" in type_list:
+                p[0].type.append("float")
+                for single_type in type_list:
+                    if single_type != "float":
+                        p[0].type.append(single_type)
+
+            if "struct" in type_list:
+                p[0].type.append("struct")
+                for single_type in type_list:
+                    if single_type != "struct":
+                        p[0].type.append(single_type)
+            if "union" in type_list:
+                p[0].type.append("union")
+                for single_type in type_list:
+                    if single_type != "union":
+                        p[0].type.append(single_type)
+            if isarr > 0:
+                temp_type = []
+                temp_type.append(p[0].type[0])
+                for i in range(isarr):
+                    temp_type[0] += " *"
+                for i in range(len(p[0].type)):
+                    if i > isarr:
+                        temp_type.append(p[0].type[i])
+                p[0].type = temp_type
+                p[0].type.append("arr")
+                for i in range(len(type_list)):
+                    if (
+                        type_list[len(type_list) - i - 1][0] == "["
+                        and type_list[len(type_list) - i - 1][-1] == "]"
+                    ):
+                        p[0].type.append(type_list[len(type_list) - i - 1])
+
+            if "void" in type_list:
+                p[0].type.append("void")
+                for single_type in type_list:
+                    if single_type != "void":
+                        p[0].type.append(single_type)
+
+            if "*" in type_list:
+                temp_type = []
+                temp_type.append(p[0].type[0])
+                for i in range(1, len(p[0].type)):
+                    if p[0].type[i] == "*":
+                        temp_type[0] += " *"
+                    else:
+                        temp_type.append(p[0].type[i])
+                p[0].type = temp_type
+            if ("struct" in p[0].type or "union" in p[0].type) and p[0].type != p[
+                2
+            ].type:
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "Need struct/union of type"
+                    + str(p[0].type)
+                    + ", instead got return type "
+                    + str(p[2].type)
+                    + "at line"
+                    + str(p.lineno(1))
+                    + "."
+                    + bcolors.ENDC
+                )
+                return
+
+            isin = True
+            for single_type in p[0].type:
+                if single_type not in p[2].type:
+                    isin = False
+            if isin == False:
+                p[2].totype = p[0].type
+                p2str = "to"
+                for single_type in p[0].type:
+                    p2str += "_" + single_type
+                p2str = p2str.replace(" ", "_")
+                if "*" == p[0].type[0][-1]:
+                    p2str = "to_int_unsigned"
+                p2 = Node(p2str, [p[2]])
+            else:
+                p2 = p[2]
+            p[0].insert_edge([p2])
+            if self.symtab.error:
+                return
+            if p[2].totype is not None and p[2].totype != p[2].type:
+                p2.temp = self.three_address_code.create_temp_var()
+                self.symtab.insert_symbol(p2.temp, 0)
+                self.symtab.modify_symbol(p2.temp, "data_type", p[2].totype)
+                self.symtab.modify_symbol(p2.temp, "identifier_type", "TEMP")
+                self.symtab_size_update(p[2].totype, p2.temp)
+                if self.symtab.is_global(p2.temp):
+                    self.symtab.modify_symbol(p2.temp, "variable_scope", "Global")
+                else:
+                    self.symtab.modify_symbol(p2.temp, "variable_scope", "Local")
+                    found, entry = self.symtab.return_sym_tab_entry(p2.temp)
+                    var_size = found["allocated_size"]
+                    if found["variable_scope"] == "Local":
+                        if found["offset"] > 0:
+                            self.symtab.modify_symbol(
+                                p2.temp,
+                                "temp",
+                                f'-{found["offset"] + found["allocated_size"] }(%ebp)',
+                            )
+                        else:
+                            self.symtab.modify_symbol(
+                                p2.temp,
+                                "temp",
+                                f'{-found["offset"] - found["allocated_size"] }(%ebp)',
+                            )
+                    p2.temp = found["temp"]
+                currtype = []
+                for single_type in p[2].type:
+                    if (
+                        single_type != "arr"
+                        and single_type[0] != "["
+                        and single_type[-1] != "]"
+                    ):
+                        currtype.append(single_type)
+                cstr = "," + " ".join(currtype).replace(" ", "_")
+                self.three_address_code.emit(
+                    "cast",
+                    p2.temp,
+                    p[2].temp,
+                    " ".join(p[2].totype).replace(" ", "_") + cstr,
+                )
+            else:
+                p2.temp = p[2].temp
+            if ("struct" in p[0].type) and ("*" not in p[0].type):
+                temp_type = " ".join(p[0].type)
+                self.three_address_code.emit(
+                    "retq_struct", p[2].temp, datatype_size[temp_type], ""
+                )
+            else:
+                self.three_address_code.emit("retq", p2.temp, "", "")
+
     def p_translation_unit(self, p):
         """translation_unit : translation_unit external_declaration
         | external_declaration
@@ -3258,12 +8154,10 @@ class Parser:
         p[0] = self.ast_root
         if len(p) == 2:
             if (p[1] is not None) and (p[1].node is not None):
-                graph.add_edge(p[0].node, p[1].node)
-                self.ast_root.children.append(p[1])
+                p[0].insert_edge([p[1]])
         elif len(p) == 3:
             if (p[2] is not None) and (p[2].node is not None):
-                graph.add_edge(p[0].node, p[2].node)
-                self.ast_root.children.append(p[2])
+                p[0].insert_edge([p[2]])
 
     def p_external_declaration(self, p):
         """external_declaration : function_definition
@@ -3274,8 +8168,8 @@ class Parser:
         p[0] = p[1]
 
     def p_function_definition(self, p):
-        """function_definition :  declaration_specifiers function_declarator '{' markerFuncStart '}' markerFuncEnd
-        | declaration_specifiers function_declarator '{' markerFuncStart block_item_list '}' markerFuncEnd
+        """function_definition :  declaration_specifiers function_declarator '{' marker_function_start '}' marker_function_end
+        | declaration_specifiers function_declarator '{' marker_function_start block_item_list '}' marker_function_end
         """
         if self.error:
             return
@@ -3285,18 +8179,17 @@ class Parser:
             line = 3
 
         elif len(p) == 8:
-            if p[3] == "{":
-                p[0] = Node("function", [p[2], Node("SCOPE", [p[5]])])
-                line = 3
-            else:
-                p[0] = Node("function", [p[2], p[3]])
-                line = 4
-        elif len(p) == 9:
-            p[0] = Node("function", [p[2], p[3]], Node("SCOPE", [p[6]]))
-            line = 4
+            p[0] = Node("function", [p[2], Node("SCOPE", [p[5]])])
+            line = 3
+            if not self.symtab.error:
+                self.three_address_code.backpatch(p[5].next_list, p[7].quadruples)
+                self.three_address_code.backpatch(p[5].break_list, p[7].quadruples)
         p[1].remove_graph()
 
         temp_list = []
+        if p[1].type is None:
+            p[1].type = []
+
         for i in p[1].type:
             if i != "*":
                 temp_list.append(i)
@@ -3304,16 +8197,20 @@ class Parser:
         val = len(set(temp_list))
         if len(temp_list) != val:
             self.symtab.error = True
-            print(bcolors.FAIL+
-                "Function type cannot have duplicating type of declarations at line "+
-                str(p.lineno(line))+bcolors.ENDC
+            print(
+                bcolors.FAIL
+                + "Function type cannot have duplicating type of declarations at line "
+                + str(p.lineno(line))
+                + bcolors.ENDC
             )
 
         if "unsigned" in p[1].type and "signed" in p[1].type:
             self.symtab.error = True
-            print(bcolors.fail+
-                "Function type cannot be both signed and unsigned at line "+
-                str(p.lineno(line))+bcolors.ENDC
+            print(
+                bcolors.fail
+                + "Function type cannot be both signed and unsigned at line "
+                + str(p.lineno(line))
+                + bcolors.ENDC
             )
 
         else:
@@ -3322,9 +8219,10 @@ class Parser:
                 "signed" in p[1].type
                 or "unsigned" in p[1].type
                 or "int" in p[1].type
-                or "char" in p[1].type
                 or "short" in p[1].type
             ):
+                cnt = cnt + 1
+            if "char" in p[1].type:
                 cnt = cnt + 1
             if "bool" in p[1].type:
                 cnt = cnt + 1
@@ -3339,10 +8237,15 @@ class Parser:
 
             if cnt > 1:
                 self.symtab.error = True
-                print(bcolors.FAIL+
-                    "Two or more conflicting data types specified for function at line "+
-                    str(p.lineno(line))+bcolors.ENDC
+                print(
+                    bcolors.FAIL
+                    + "Two or more conflicting data types specified for function at line "
+                    + str(p.lineno(line))
+                    + bcolors.ENDC
                 )
+
+        if self.symtab.error:
+            return
 
         for i in p[2].variables:
             temp = p[2].variables[i]
@@ -3354,22 +8257,141 @@ class Parser:
                 for i in range(len(temp_arr)):
                     if i != 0 and temp_arr[i] == "":
                         self.symtab.error = True
-                        print(bcolors.FAIL+
-                            "Multidimensional array must have bound for all dimensions except first at line "+
-                            str(p.lineno(line))+bcolors.ENDC
+                        print(
+                            bcolors.FAIL
+                            + "Multidimensional array must have bound for all dimensions except first at line "
+                            + str(p.lineno(line))
+                            + bcolors.ENDC
                         )
 
                     if int(temp_arr[i]) <= 0 and temp_arr[i] != "":
                         self.symtab.error = True
-                        print(bcolors.FAIL+
-                            "Array bound cannot be non-positive at line "+
-                            str(p.lineno(line))+bcolors.ENDC
+                        print(
+                            bcolors.FAIL
+                            + "Array bound cannot be non-positive at line "
+                            + str(p.lineno(line))
+                            + bcolors.ENDC
                         )
 
-    def p_markerFuncStart(self, p):
-        """
-        markerFuncStart :
-        """
+        if self.symtab.error:
+            return
+
+        for key in p[2].variables.keys():
+            if p[2].variables[key][0] == "Function Name":
+                function_name = key
+                break
+
+        if self.symtab.error:
+            return
+
+        func, entry = self.symtab.return_sym_tab_entry(function_name)
+        func_type = func["data_type"]
+
+        if "void" in func_type and len(func_type) == 1:
+            self.three_address_code.emit("retq", "", "", "")
+        else:
+            self.three_address_code.emit("retq", "$0", "", "")
+        self.three_address_code.emit("", "", "", "")
+
+        for var in entry["scope"][0]:
+            if var == "struct_or_union":
+                continue
+            if var == "scope":
+                continue
+            if var == "scope_num":
+                continue
+            if var[0] == "!":
+                continue
+            param = entry["scope"][0][var]
+
+            temp_type_list = []
+            temp2_type_list = []
+            nums_arr = []
+            ctrpar = -1
+            for single_type in param["data_type"]:
+                ctrpar += 1
+                if single_type != "*":
+                    temp_type_list.append(single_type)
+                    if single_type[0] != "[" or single_type[-1] != "]":
+                        temp2_type_list.append(single_type)
+
+                if single_type[0] == "[" and single_type[-1] == "]":
+                    if single_type[1:-1] == "" and ctrpar != 0:
+                        self.symtab.error = 1
+                        print(
+                            bcolors.FAIL
+                            + "Cannot have empty indices for array declarations at line "
+                            + str(param["line"])
+                            + bcolors.ENDC
+                        )
+                        return
+                    elif single_type[1:-1] != "" and int(single_type[1:-1]) <= 0:
+                        self.symtab.error = 1
+                        print(
+                            bcolors.FAIL
+                            + "Cannot have non-positive integers for array declarations at line "
+                            + str(param["line"])
+                            + bcolors.ENDC
+                        )
+                        return
+
+            if len(temp2_type_list) != len(set(temp2_type_list)):
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "variables cannot have duplicating type of declarations at line",
+                    param["line"],
+                )
+                return
+
+            if "unsigned" in param["data_type"] and "signed" in param["data_type"]:
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL
+                    + "variable cannot be both signed and unsigned at line",
+                    param["line"],
+                )
+                return
+            elif "void" in param["data_type"] and "*" not in param["data_type"]:
+                self.symtab.error = 1
+                print(
+                    bcolors.FAIL + "Cannot have a void type variable at line ",
+                    param["line"],
+                )
+                return
+            else:
+                data_type_count = 0
+                if (
+                    "int" in param["data_type"]
+                    or "short" in param["data_type"]
+                    or "unsigned" in param["data_type"]
+                    or "signed" in param["data_type"]
+                ):
+                    data_type_count += 1
+                if "char" in param["data_type"]:
+                    data_type_count += 1
+                if "bool" in param["data_type"]:
+                    data_type_count += 1
+                if "float" in param["data_type"]:
+                    data_type_count += 1
+                if "void" in param["data_type"]:
+                    data_type_count += 1
+                if "struct" in param["data_type"]:
+                    data_type_count += 1
+                if "union" in param["data_type"]:
+                    data_type_count += 1
+                if data_type_count > 1:
+                    self.symtab.error = 1
+                    print(
+                        bcolors.FAIL
+                        + "Two or more conflicting data types specified for variable at line "
+                        + str(param["line"])
+                        + bcolors.ENDC
+                    )
+                    return
+
+    def p_marker_function_start(self, p):
+        """marker_function_start :"""
         if self.error:
             return
         p[0] = Node("", create_ast=False)
@@ -3379,6 +8401,10 @@ class Parser:
         valtype = "function"
 
         for key in p[0].variables.keys():
+            if p[0].variables[key] is None or p[0].variables[key] == []:
+                self.error = True
+                print(bcolors.FAIL + "Invalid syntax" + bcolors.ENDC)
+                return
             if p[0].variables[key][0] == tosearch:
                 function_name = key
                 break
@@ -3387,7 +8413,7 @@ class Parser:
 
         self.symtab.modify_symbol(
             function_name, "identifier_type", valtype, p.lineno(0)
-        )  # says that this entry is a function
+        )
         param_nums = 0
 
         for var_name in p[0].variables.keys():
@@ -3404,7 +8430,10 @@ class Parser:
                     )
                     if found:
                         self.symtab.modify_symbol(
-                            var_name, "identifier_type", found["identifier_type"], p.lineno(0)
+                            var_name,
+                            "identifier_type",
+                            found["identifier_type"],
+                            p.lineno(0),
                         )
                         self.symtab.modify_symbol(
                             var_name, "vars", found["vars"], p.lineno(0)
@@ -3416,31 +8445,24 @@ class Parser:
                     self.symtab.modify_symbol(
                         var_name, "data_type", p[0].variables[var_name], p.lineno(0)
                     )
-                self.symtab.modify_symbol(var_name, "identifier_type", "parameter", p.lineno(0))
+                self.symtab.modify_symbol(
+                    var_name, "identifier_type", "parameter", p.lineno(0)
+                )
                 param_nums = param_nums + 1
 
-                #updating variable class
                 if p[0].variables[var_name]:
-                    isGlobal = self.symtab.is_global(var_name)
-                    if isGlobal:
+                    is_global = self.symtab.is_global(var_name)
+                    if is_global:
                         self.symtab.modify_symbol(
-                            var_name, "varclass", "Global", p.lineno(0)
+                            var_name, "variable_scope", "Global", p.lineno(0)
                         )
                     else:
                         self.symtab.modify_symbol(
-                            var_name, "varclass", "Local", p.lineno(0)
+                            var_name, "variable_scope", "Local", p.lineno(0)
                         )
 
-                # updating sizes
                 if p[0].variables[var_name]:
-                    # handling arrays
                     prod = 1
-                    for type_name in p[0].variables[var_name]:
-                        if type_name[0] == "[" and type_name[-1] == "]":
-                            if type_name[1:-1] != "":
-                                prod = prod * int(type_name[1:-1])
-                        else:
-                            break
 
                     szstr = "allocated_size"
                     vct = [
@@ -3456,7 +8478,7 @@ class Parser:
 
                     if "*" in p[0].variables[var_name]:
                         self.symtab.modify_symbol(
-                            var_name, szstr, prod * sizes["ptr"], p.lineno(0)
+                            var_name, szstr, prod * datatype_size["ptr"], p.lineno(0)
                         )
 
                     else:
@@ -3464,14 +8486,13 @@ class Parser:
                             if vc == "struct":
                                 if vc in p[0].variables[var_name]:
                                     struct_size = 0
-                                    found, tmp = self.symtab.return_sym_tab_entry(
-                                        var_name, p.lineno(0)
+                                    found, tmp = self.symtab.return_type_tab_entry_su(
+                                        p[0].variables[var_name][-2],
+                                        p[0].variables[var_name][-1],
+                                        p.lineno(0),
                                     )
-                                    if True == found:
-                                        for var in found["vars"]:
-                                            struct_size = (
-                                                struct_size + found["vars"][var][szstr]
-                                            )
+                                    if found:
+                                        struct_size = found[szstr]
                                     self.symtab.modify_symbol(
                                         var_name, szstr, prod * struct_size, p.lineno(0)
                                     )
@@ -3479,14 +8500,15 @@ class Parser:
                             elif vc == "union":
                                 if vc in p[0].variables[var_name]:
                                     struct_size = 0
-                                    found, tmp = self.symtab.return_sym_tab_entry(
-                                        var_name, p.lineno(0)
+                                    found, tmp = self.symtab.return_type_tab_entry_su(
+                                        p[0].variables[var_name][-2],
+                                        p[0].variables[var_name][-1],
+                                        p.lineno(0),
                                     )
                                     if found:
+                                        struct_size = found[szstr]
                                         for var in found["vars"]:
-                                            struct_size = max(
-                                                found["vars"][var][szstr], struct_size
-                                            )
+                                            found["vars"][var]["offset"] = 0
                                     self.symtab.modify_symbol(
                                         var_name, szstr, prod * struct_size, p.lineno(0)
                                     )
@@ -3494,20 +8516,71 @@ class Parser:
                             else:
                                 if vc in p[0].variables[var_name]:
                                     self.symtab.modify_symbol(
-                                        var_name, szstr, prod * sizes[vc], p.lineno(0)
+                                        var_name,
+                                        szstr,
+                                        prod * datatype_size[vc],
+                                        p.lineno(0),
                                     )
             else:
-                self.symtab.modify_symbol(var_name, "data_type", p[0].variables[key][1:])
+                self.symtab.modify_symbol(
+                    var_name, "data_type", p[0].variables[key][1:]
+                )
+
+        found, entry = self.symtab.return_sym_tab_entry(function_name)
+        self.symtab.offset = 8
+        if ("struct" in found["data_type"]) and ("*" not in found["data_type"]):
+            self.symtab.offset = 12
+        for var_name in p[0].variables.keys():
+            if not var_name == function_name:
+                if (
+                    "struct" in p[0].variables[var_name]
+                    and "*" not in p[0].variables[var_name]
+                ):
+                    found, entry = self.symtab.return_sym_tab_entry(var_name)
+                    if found:
+                        for var in found["vars"]:
+                            found["vars"][var][
+                                "temp"
+                            ] = f'{found["vars"][var]["offset"] + self.symtab.offset}(%ebp)'
+                elif (
+                    "union" in p[0].variables[var_name]
+                    and "*" not in p[0].variables[var_name]
+                ):
+                    found, entry = self.symtab.return_sym_tab_entry(var_name)
+                    if found:
+                        for var in found["vars"]:
+                            found["vars"][var]["temp"] = f"{self.symtab.offset}(%ebp)"
+                found, entry = self.symtab.return_sym_tab_entry(var_name)
+                alignedSz = self.symtab.top_scope[var_name][szstr]
+                self.symtab.offset += alignedSz
+                self.symtab.modify_symbol(
+                    var_name, "offset", -(self.symtab.offset), p.lineno(0)
+                )
+                if found["offset"] > 0:
+                    self.symtab.modify_symbol(
+                        var_name, "temp", f'-{found["offset"] + alignedSz}(%ebp)'
+                    )
+                else:
+                    self.symtab.modify_symbol(
+                        var_name, "temp", f'{-found["offset"] - alignedSz}(%ebp)'
+                    )
 
         self.symtab.modify_symbol(function_name, "num_parameters", param_nums)
-
-    def p_markerFuncEnd(self, p):
-        """
-        markerFuncEnd :
-        """
-        if True == self.error:
+        self.symtab.offset = 0
+        if self.symtab.error:
             return
-        self.symtab.pop_scope()
+
+        self.three_address_code.emit(str(function_name) + ":", "", "", "")
+
+    def p_marker_function_end(self, p):
+        """marker_function_end :"""
+        if self.error:
+            return
+        self.symtab.pop_scope(self.three_address_code)
+        p[0] = Node("", create_ast=False)
+        if self.symtab.error:
+            return
+        p[0].quadruples = self.three_address_code.next_statement
 
     def printTree(self):
         self.ast_root.print_val()
@@ -3518,7 +8591,7 @@ aparser.add_argument(
     "-d", "--debug", action="store_true", help="Parser Debug Mode", default=False
 )
 aparser.add_argument(
-    "-o", "--out", help="Store output of parser in a file", default='symtab.csv'
+    "-o", "--out", help="Store output of parser in a file", default="./symtab.csv"
 )
 aparser.add_argument("infile", help="Input File")
 args = aparser.parse_args()
@@ -3537,21 +8610,29 @@ parser = Parser()
 parser.build()
 result = parser.parser.parse(inp, lexer=lex.lexer)
 
-fdir = '/'.join(args.out.split("/")[:-1])
+fdir = "/".join(args.out.split("/")[:-1])
 fname = args.out.split("/")[-1].split(".")[0]
 outputFile = "dot/" + fname + ".dot"
 
 if parser.error:
-    print(bcolors.FAIL+"Error found. Aborting parsing of " + str(sys.argv[1]) + "...."+bcolors.ENDC)
+    print(
+        bcolors.FAIL
+        + "Error found. Aborting parsing of "
+        + str(sys.argv[1])
+        + "...."
+        + bcolors.ENDC
+    )
     sys.exit(0)
 elif parser.symtab.error:
-    print(bcolors.FAIL+"Error in semantic analysis."+bcolors.ENDC)
+    print(bcolors.FAIL + "Error in semantic analysis." + bcolors.ENDC)
     sys.exit(0)
 else:
-    symtab_csv= open(fdir + "/" + fname + ".csv", "w")
+    symtab_csv = open(fdir + "/" + fname + ".csv", "w")
     print("Output Symbol Table CSV is: " + fname + ".csv")
     graph.write(outputFile)
     orig_stdout = sys.stdout
     sys.stdout = symtab_csv
     parser.symtab.print_table()
     sys.stdout = orig_stdout
+    parser.three_address_code.add_strings()
+    parser.three_address_code.print_code()
