@@ -1,14 +1,9 @@
-###############
-# Delete all coments
-###############
-
-
 import copy
 
 
 class three_address_code:
     def __init__(self):
-        self.code = []  # yaha bas statement seq upar neeche kari
+        self.code = []
         self.float_values = []
         self.string_list = []
         self.global_variables = []
@@ -29,7 +24,7 @@ class three_address_code:
         temp_name = "$temp_var_" + str(self.counter_temp)
         return temp_name
 
-    def backpatch(self, p_list, lno):  # changes here, added 3 variables
+    def backpatch(self, p_list, lno):
         updated_lno = lno + 1
         for i in p_list:
             compare_str = "goto"
@@ -49,15 +44,15 @@ class three_address_code:
     def find_symbol_in_symtab(self, symtab, identifier):
         if identifier is not None:
             found, entry = symtab.return_sym_tab_entry(identifier)
-            compare_str = "temp"  # replaced string and list with vars
+            compare_str = "temp"
             to_check_list = found.keys()
             if compare_str in to_check_list:
                 return found["temp"]
             else:
                 new_temp = self.create_temp_var()
-                symtab.modify_symbol(identifier, compare_str, new_temp)  # here too
+                symtab.modify_symbol(identifier, compare_str, new_temp) 
                 return new_temp
-        return None  # if-else, order changed and else removed
+        return None 
 
     def print_code(self):
 
@@ -71,15 +66,15 @@ class three_address_code:
             self.emit(f".comm", "", str(val[0]) + "," + str(val[1]), "")
         self.emit(".data", "", "", "")
 
-        deleted = 0  # changed ordering
+        deleted = 0 
         lines_dict = dict()
         temp_code = copy.deepcopy(self.code)
-        check_ran = range(0, len(temp_code))  # added extra var
+        check_ran = range(0, len(temp_code)) 
         self.code = []
         for i in check_ran:
             code = temp_code[i]
             lines_dict[i + 1] = i - deleted + 1
-            compare_str = "goto"  # replaced string and list with vars
+            compare_str = "goto" 
             compare_str_2 = "retq"
             to_check_list = code[0].split()
             to_check_list_2 = temp_code[i - 1][0].split()
@@ -87,7 +82,7 @@ class three_address_code:
                 if code[1] == "" or code[1] == None:
                     deleted = deleted + 1
                 else:
-                    self.code.append(code)  #### kaafi changes here
+                    self.code.append(code)
             elif compare_str_2 in to_check_list and (
                 compare_str_2 in to_check_list_2 or "retq_struct" in to_check_list_2
             ):
@@ -98,7 +93,7 @@ class three_address_code:
         for i in check_ran:
             code = self.code[i]
             compare_str = "goto"
-            if compare_str in code[0].split():  # changess
+            if compare_str in code[0].split(): 
                 spec_elem = self.code[i][1]
                 self.code[i][1] = lines_dict[spec_elem]
         check_ran = range(0, len(self.code))
@@ -117,16 +112,16 @@ class three_address_code:
             ):
                 check_ran = reversed(range(i))
                 for j in check_ran:
-                    prev_code = self.code[j]  # many changess variables added
+                    prev_code = self.code[j]
                     check_code = "UNARY&"
                     if len(prev_code[0]) <= 0:
                         break
                     elif prev_code[0] == check_code:
-                        self.code[j + 1] = prev_code  # changed sequence
+                        self.code[j + 1] = prev_code 
                         self.code[j] = code
                         break
                     else:
-                        self.code[j + 1] = prev_code  # changed sequence
+                        self.code[j + 1] = prev_code
                         self.code[j] = code
         check_ran = range(0, len(self.code))
         for i in check_ran:

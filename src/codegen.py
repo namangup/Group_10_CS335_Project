@@ -1095,7 +1095,6 @@ class CodeGenerator:
     def op_goto(self, instruction):
         self.emit_code("jmp", self.create_label(instruction[1]))
 
-    # Is function mein bahut saara code redundant hai within the if condisiton, and I think wo saari out of the if
     def op_comparator(self, instruction):
         """
         This function is currently only implemented
