@@ -37,6 +37,12 @@ optional arguments:
   -o OUT, --out OUT  Store output of parser in a file
 ```
 
+### Codegen
+```
+python src/codegen.py
+usage: codegen.py  infile
+```
+
 ### Generating Automaton Graph
 > Note: This is a time consuming step.
 

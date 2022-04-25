@@ -304,13 +304,12 @@ class SymbolTable:
 
     def push_scope(self, three_address_code):
         self.offset_list.append(self.offset)
-        self.offset = 0
 
         temporary_ptr = -20
         for item in self.top_scope.keys():
             if (
                 item != "scope"
-                and item != "struct_or_union"
+                and item != "struct"
                 and item != "scope_num"
                 and "temp" in self.top_scope[item].keys()
                 and self.top_scope[item]["temp"][0] == "-"
@@ -323,7 +322,7 @@ class SymbolTable:
         if len(self.table) == 0:
             self.table.append(self.top_scope)
             TopScopeName = list(self.top_scope.items())[-1][0]
-            if TopScopeName != "struct_or_union":
+            if TopScopeName != "struct":
                 self.top_scope = list(self.top_scope.items())[-1][1]
                 if "scope" not in self.top_scope:
                     self.top_scope["scope"] = []
@@ -352,7 +351,7 @@ class SymbolTable:
         return
 
     def store_results(self, three_address_code):
-        self.top_scope["struct_or_union"] = dict(self.top_scope_su)
+        self.top_scope["struct"] = dict(self.top_scope_su)
         self.push_scope(three_address_code)
         three_address_code.code.pop()
         return
@@ -366,7 +365,7 @@ class SymbolTable:
             for i in self.top_scope.keys():
                 if (
                     i != "scope"
-                    and i != "struct_or_union"
+                    and i != "struct"
                     and i != "scope_num"
                     and "temp" in self.top_scope[i].keys()
                     and self.top_scope[i]["temp"][0] == "-"
@@ -396,7 +395,7 @@ class SymbolTable:
                 )
                 three_address_code.emit("PushScope", "", "", "")
 
-        self.top_scope["struct_or_union"] = dict(self.top_scope_su)
+        self.top_scope["struct"] = dict(self.top_scope_su)
         self.pop_scope_su()
         TScope = self.top_scope
         self.offset = self.offset_list[-1]
@@ -408,12 +407,12 @@ class SymbolTable:
             self.top_scope = None
         return TScope
 
-    def del_struct_or_union(self, temp):
+    def del_struct(self, temp):
         list_copy = []
         for item in temp["scope"]:
-            item.pop("struct_or_union", None)
+            item.pop("struct", None)
             if "scope" in item:
-                self.del_struct_or_union(item)
+                self.del_struct(item)
             if not item:
                 continue
             list_copy.append(item)
@@ -503,7 +502,7 @@ class SymbolTable:
             "Parameter Count",
             "Allocated Size",
             "Offset",
-            "Struct/Union",
+            "Struct",
             "Scope",
         ]
         #     0              1                   2          3         4      5                   6                      7          8                9
@@ -511,7 +510,7 @@ class SymbolTable:
 
         for key, value in self.table[0].items():
             cur_row = [key, "Global", "", "", "", "", "", "", "", ""]
-            if key != "struct_or_union" and key != "scope_num":
+            if key != "struct" and key != "scope_num":
                 for key2, value2 in value.items():
                     if key2 == "line":
                         cur_row[2] = value2
@@ -538,9 +537,9 @@ class SymbolTable:
             if key != "scope_num" and "scope" in value:
                 tmp = copy.deepcopy(value["scope"][0])
                 # print(tmp)
-                del tmp["struct_or_union"]
+                del tmp["struct"]
                 if "scope" in tmp:
-                    self.del_struct_or_union(tmp)
+                    self.del_struct(tmp)
 
                 if len(tmp) > 0:
                     # print(tmp)

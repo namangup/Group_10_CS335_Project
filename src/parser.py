@@ -8,23 +8,11 @@ import sys
 import pygraphviz as pgv
 from symboltable import SymbolTable, bcolors
 from three_address_code import three_address_code
-import struct, json, copy
+import struct, copy
 
 num_nodes = 0
 graph = pgv.AGraph(strict=False, directed=True)
 graph.layout(prog="circo")
-
-
-def new_node():
-    global num_nodes
-    graph.add_node(num_nodes)
-    node = graph.get_node(num_nodes)
-    num_nodes += 1
-    return node
-
-
-def remove_node(node):
-    graph.remove_node(node)
 
 
 class Node:
@@ -32,33 +20,35 @@ class Node:
         self.label = label
         self.children = []
         self.create_ast = create_ast
-        self.node = None
         self.attributes = {"error": False}
         self.is_var = False
-        self.extraVals = []
         self.variables = {}
         self.temp = ""
-        self.var_name = []
 
-        self.break_list = []
-        self.continuelist = []
-        self.true_list = []
-        self.false_list = []
+        (
+            self.extraVals,
+            self.var_name,
+            self.break_list,
+            self.continuelist,
+            self.true_list,
+            self.next_list,
+            self.false_list,
+            self.argument_list,
+            self.test_list,
+            self.type,
+        ) = ([] for i in range(10))
 
-        self.next_list = []
-        self.argument_list = []
-        self.test_list = []
+        (
+            self.node,
+            self.totype,
+            self.parameter_nums,
+            self.parameters,
+            self.quadruples,
+            self.dim_list,
+            self.address,
+        ) = (None,) * 7
 
-        self.totype = None
-        self.type = []
-        self.parameter_nums = None
-        self.parameters = None
-
-        self.numdef = 0
-        self.quadruples = None
-        self.dim_list = None
-        self.address = None
-        self.array_level = 0
+        self.numdef, self.array_level = (0,) * 2
 
         if children is None:
             self.is_terminal = True
@@ -82,33 +72,36 @@ class Node:
 
     def insert_edge(self, children):
         listNode = []
-        for child in children:
+        for idx, child in enumerate(children):
+            listNode = listNode + [child.node]
             graph.add_edge(self.node, child.node)
-            listNode.append(child.node)
         for i in range(0, len(children) - 1):
             graph.add_edge(children[i].node, children[i + 1].node, style="invis")
         graph.add_subgraph(listNode, rank="same")
-        self.children += children
+        self.children = self.children + children
 
     def make_graph(self):
-        if self.is_terminal:
-            self.node = new_node()
-            self.node.attr["label"] = self.label
-        else:
+        if not self.is_terminal:
             children = []
-            for child in self.children:
-                if (child is not None) and (child.node is not None):
+            for idx, child in enumerate(self.children):
+                if child is None:
+                    pass
+                elif child.node is None:
+                    pass
+                else:
                     children.append(child)
             self.children = children
-            if self.children:
+            if self.children is not None:
+                listNode = []
                 self.node = new_node()
                 self.node.attr["label"] = self.label
-                listNode = []
-                for child in self.children:
+                for idx, child in enumerate(self.children):
                     graph.add_edge(self.node, child.node)
                     listNode.append(child.node)
-
                 graph.add_subgraph(listNode, rank="same")
+        else:
+            self.node = new_node()
+            self.node.attr["label"] = self.label
 
     def remove_graph(self):
         for child in self.children:
@@ -118,18 +111,17 @@ class Node:
         self.node = None
 
 
-datatype_size = {
-    "int": 4,
-    "char": 1,
-    "short": 2,
-    "float": 4,
-    "ptr": 4,
-    "bool": 1,
-    "void": 0,
-    "int unsigned": 4,
-    "unsigned int": 4,
-    "str": 4,
-}
+datatype_size = dict()
+datatype_size["void"] = 0
+datatype_size["bool"] = 1
+datatype_size["char"] = 1
+datatype_size["short"] = 2
+datatype_size["ptr"] = 4
+datatype_size["int"] = 4
+datatype_size["float"] = 4
+datatype_size["unsigned int"] = 4
+datatype_size["int unsigned"] = 4
+datatype_size["str"] = 4  # char pointer
 
 
 class Parser:
@@ -143,55 +135,33 @@ class Parser:
         self.ast_root = Node("AST Root")
         self.error = False
         self.three_address_code = three_address_code()
-        self.symtabrList = []
 
     def symtab_size_update(self, variables, var_name):
         multiplier = 1
-        new_list = []
-        for var in variables:
-            new_list = new_list + var.split(" ")
+        new_list = list()
+        for idx, var in enumerate(variables):
+            new_list += var.split(" ")
         variables = new_list
+
         if "*" in variables:
             self.symtab.modify_symbol(var_name, "allocated_size", datatype_size["ptr"])
         elif "struct" in variables:
-            struct_size = 0
             found = self.symtab.return_type_tab_entry_su(variables[1], "struct")
-            struct_size = found["allocated_size"]
-            self.symtab.modify_symbol(
-                var_name, "allocated_size", multiplier * struct_size
-            )
-        elif "union" in variables:
-            struct_size = 0
-            found = self.symtab.return_type_tab_entry_su(variables[1], "union")
-            struct_size = found["allocated_size"]
-            self.symtab.modify_symbol(
-                var_name, "allocated_size", multiplier * struct_size
-            )
-        elif "float" in variables:
-            self.symtab.modify_symbol(
-                var_name, "allocated_size", multiplier * datatype_size["float"]
-            )
-        elif "short" in variables:
-            self.symtab.modify_symbol(
-                var_name, "allocated_size", multiplier * datatype_size["short"]
-            )
-        elif "int" in variables:
-            self.symtab.modify_symbol(
-                var_name, "allocated_size", multiplier * datatype_size["int"]
-            )
-        elif "char" in variables:
-            self.symtab.modify_symbol(
-                var_name, "allocated_size", multiplier * datatype_size["char"]
-            )
-        elif "bool" in variables:
-            self.symtab.modify_symbol(
-                var_name, "allocated_size", multiplier * datatype_size["bool"]
-            )
+            if found is not None:
+                struct_size = found["allocated_size"]
+                self.symtab.modify_symbol(var_name, "allocated_size", struct_size)
         else:
-            self.symtab.modify_symbol(
-                var_name, "allocated_size", multiplier * datatype_size["void"]
-            )
+            datatype_arr = ["float", "short", "int", "char", "bool", "void"]
+            flag = False
+            for idx, dtype in enumerate(datatype_arr):
+                if dtype in variables:
+                    flag = True
+                    self.symtab.modify_symbol(
+                        var_name, "allocated_size", datatype_size[dtype]
+                    )
+                    break
 
+    # inspired from https://stackoverflow.com/a/60384184
     def convertFloatRepToLong(self, val):
         float_rep = "".join(
             bin(c).replace("0b", "").rjust(8, "0") for c in struct.pack("!f", val)
@@ -207,9 +177,9 @@ class Parser:
 
     def p_start(self, p):
         """
-        start : translation_unit
+        start : push_lib_functions translation_unit
         """
-        if self.error:
+        if self.error == True:
             return
         p[0] = self.ast_root
         self.symtab.store_results(self.three_address_code)
@@ -255,22 +225,22 @@ class Parser:
 
     # Expressions
 
-    def p_BoolConst(self, p):
-        """BoolConst : TRUE
+    def p_bool_constant(self, p):
+        """bool_constant : TRUE
         | FALSE
         """
-        if self.error:
+        if self.error == True:
             return
         p[0] = Node(str(p[1]))
         p[0].type = ["bool"]
 
-    def p_IntegerConst(self, p):
-        """IntegerConst : INTEGER_CONSTANT"""
-        if self.error:
+    def p_integer_constant(self, p):
+        """integer_constant : INTEGER_CONSTANT"""
+        if self.error == True:
             return
         p[0] = Node(str(p[1]))
         p[0].type = ["int"]
-        if self.symtab.error:
+        if self.symtab.error == True:
             return
         p[0].temp = self.three_address_code.create_temp_var()
         self.symtab.insert_symbol(p[0].temp, 0)
@@ -299,14 +269,14 @@ class Parser:
             p[0].temp = found["temp"]
         self.three_address_code.emit("=_int", p[0].temp, f"${p[1]}")
 
-    def p_FloatConst(self, p):
-        """FloatConst : FLOAT_CONSTANT"""
-        if self.error:
+    def p_float_constant(self, p):
+        """float_constant : FLOAT_CONSTANT"""
+        if self.error == True:
             return
         p[0] = Node(str(p[1]))
         idx = self.convertFloatRepToLong(p[1])
         p[0].type = ["float"]
-        if self.symtab.error:
+        if self.symtab.error == True:
             return
         p[0].temp = self.three_address_code.create_temp_var()
         self.symtab.insert_symbol(p[0].temp, 0)
@@ -335,13 +305,13 @@ class Parser:
             p[0].temp = found["temp"]
         self.three_address_code.emit("load_float", f".LF{idx}", p[0].temp, "")
 
-    def p_CharConst(self, p):
-        """CharConst : CHAR_CONSTANT"""
-        if self.error:
+    def p_char_constant(self, p):
+        """char_constant : CHAR_CONSTANT"""
+        if self.error == True:
             return
         p[0] = Node(str(p[1]))
         p[0].type = ["char"]
-        if self.symtab.error:
+        if self.symtab.error == True:
             return
         p[0].temp = self.three_address_code.create_temp_var()
         self.symtab.insert_symbol(p[0].temp, 0)
@@ -370,14 +340,14 @@ class Parser:
             p[0].temp = found["temp"]
         self.three_address_code.emit("=_char", p[0].temp, f"${p[1]}")
 
-    def p_StringConst(self, p):
-        """StringConst : STRING_CONSTANT"""
-        if self.error:
+    def p_string_constant(self, p):
+        """string_constant : STRING_CONSTANT"""
+        if self.error == True:
             return
         p[0] = Node(str(p[1]))
         self.three_address_code.string_list.append(str(p[1]))
         p[0].type = ["str"]
-        if self.symtab.error:
+        if self.symtab.error == True:
             return
         for i in range(0, len(self.three_address_code.string_list)):
             if self.three_address_code.string_list[i] == p[1]:
@@ -388,14 +358,14 @@ class Parser:
     def p_primary_expression(self, p):
         """
         primary_expression : IDENTIFIER
-                        | IntegerConst
-                        | FloatConst
-                        | CharConst
-                        | BoolConst
-                        | StringConst
+                        | integer_constant
+                        | float_constant
+                        | char_constant
+                        | bool_constant
+                        | string_constant
                         | '(' expression ')'
         """
-        if self.error:
+        if self.error == True:
             return
 
         if p.slice[1].type == "IDENTIFIER":
@@ -494,12 +464,6 @@ class Parser:
                             if single_type != "struct":
                                 p[0].ret_type.append(single_type)
 
-                    if "union" in type_list:
-                        p[0].ret_type.append("union")
-                        for single_type in type_list:
-                            if single_type != "union":
-                                p[0].ret_type.append(single_type)
-
                     if "void" in type_list:
                         p[0].ret_type.append("void")
                         for single_type in type_list:
@@ -521,15 +485,15 @@ class Parser:
 
                     if "scope" in entry.keys():
                         for var in entry["scope"][0]:
-                            if var == "struct_or_union":
-                                p[0].structorunion = entry["scope"][0][var]
+                            if var == "struct":
+                                p[0].struct = entry["scope"][0][var]
                                 continue
                             if var == "scope" or var == "scope_num":
                                 continue
                             if entry["scope"][0][var]["identifier_type"] == "parameter":
                                 p[0].parameters.append(entry["scope"][0][var])
 
-                    if self.symtab.error:
+                    if self.symtab.error == True:
                         return
                     p[0].true_list.append(self.three_address_code.next_statement)
                     p[0].false_list.append(self.three_address_code.next_statement + 1)
@@ -606,12 +570,6 @@ class Parser:
                         if single_type != "struct":
                             p[0].type.append(single_type)
 
-                if "union" in type_list:
-                    p[0].type.append("union")
-                    for single_type in type_list:
-                        if single_type != "union":
-                            p[0].type.append(single_type)
-
                 if isArr > 0:
                     temp_type = []
                     temp_type.append(p[0].type[0])
@@ -647,13 +605,13 @@ class Parser:
                             temp_type.append(p[0].type[i])
                     p[0].type = temp_type
 
-                if "struct" in p[0].type[0] or "union" in p[0].type[0]:
+                if "struct" in p[0].type[0]:
                     p[0].vars = entry["vars"]
 
             else:
                 p[0] = Node("error")
 
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
 
             p[0].var_name.append(p[1]["lexeme"])
@@ -665,9 +623,9 @@ class Parser:
             self.three_address_code.emit("ifnz goto", "", p[0].temp, "")
             self.three_address_code.emit("goto", "", "", "")
 
-        elif str(p.slice[1])[-5:] == "Const":
+        elif str(p.slice[1])[-8:] == "constant":
             p[0] = p[1]
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             p[0].true_list.append(self.three_address_code.next_statement)
             p[0].false_list.append(self.three_address_code.next_statement + 1)
@@ -682,7 +640,7 @@ class Parser:
 
     def p_identifier(self, p):
         """identifier : IDENTIFIER"""
-        if self.error:
+        if self.error == True:
             return
         p[0] = Node(str(p[1]["lexeme"]))
         p[0].variables[p[0].label] = []
@@ -690,7 +648,7 @@ class Parser:
         self.symtab.insert_symbol(p[1]["lexeme"], p[1]["additional"]["line"])
         self.symtab.modify_symbol(p[1]["lexeme"], "identifier_type", "variable")
 
-        if self.symtab.error:
+        if self.symtab.error == True:
             return
 
         self.symtab.modify_symbol(p[1]["lexeme"], "temp", p[1]["lexeme"])
@@ -706,12 +664,12 @@ class Parser:
                         | postfix_expression INC_OP
                         | postfix_expression DEC_OP
         """
-        if self.error:
+        if self.error == True:
             return
         if len(p) == 2:
             p[0] = p[1]
             if p[1] == None or p[1].type == None:
-                self.symtab.error = 1
+                self.symtab.error = True
                 return
             for i in range(len(p[1].type) - 1, 0, -1):
                 if p[1].type[i][0] != "[":
@@ -787,7 +745,7 @@ class Parser:
                 p[0] = Node("Postfix" + str(p[2]), children=[p[1]])
                 p[0].type = p[1].type
 
-                if self.symtab.error:
+                if self.symtab.error == True:
                     return
 
                 p[0].var_name = p[1].var_name
@@ -835,26 +793,26 @@ class Parser:
                     self.symtab.error = True
                     print(
                         bcolors.FAIL
-                        + "Requested an invalid member of object that isn't a structure/union at Line No.: "
+                        + "Requested an invalid member of object that isn't a structure at Line No.: "
                         + str(p.lineno(2))
                         + bcolors.ENDC
                     )
-                if "struct" not in p[1].type and "union" not in p[1].type:
-                    self.symtab.error = 1
+                if "struct" not in p[1].type:
+                    self.symtab.error = True
                     print(
                         bcolors.FAIL
-                        + f"Invalid request for member of object that is not a structure/union at line {p.lineno(2)}"
+                        + f"Invalid request for member of object that is not a structure at line {p.lineno(2)}"
                     )
                     return
                 if not hasattr(p[1], "vars"):
-                    self.symtab.error = 1
+                    self.symtab.error = True
                     return
 
                 elif p3val not in p[1].vars:
                     self.symtab.error = True
                     print(
                         bcolors.FAIL
-                        + "Requested an invalid member of object that doesn't belong to the structure/union at Line No.: "
+                        + "Requested an invalid member of object that doesn't belong to the structure at Line No.: "
                         + str(p.lineno(2))
                         + bcolors.ENDC
                     )
@@ -913,12 +871,6 @@ class Parser:
                             if single_type != "struct":
                                 p[0].type.append(single_type)
 
-                    if "union" in type_list:
-                        p[0].type.append("union")
-                        for single_type in type_list:
-                            if single_type != "union":
-                                p[0].type.append(single_type)
-
                     if narr > 0:
                         temp_type = []
                         temp_type.append(p[0].type[0])
@@ -953,19 +905,17 @@ class Parser:
                                 temp_type.append(p[0].type[i])
                         p[0].type = temp_type
 
-                    if "struct" in p[0].type[0] or "union" in p[0].type[0]:
+                    if "struct" in p[0].type[0]:
                         strtype = ""
                         if "struct" in p[0].type[0]:
                             strtype = "struct"
-                        elif "union" in p[0].type[0]:
-                            strtype = "union"
                         typet = self.symtab.return_type_tab_entry_su(
                             p[0].type[1], strtype, p.lineno(3)
                         )
                         p[0].vars = typet["vars"]
-                    if "struct" not in p[0].type and "union" not in p[0].type:
+                    if "struct" not in p[0].type:
                         p[0].is_var = 1
-                if self.symtab.error:
+                if self.symtab.error == True:
                     return
                 p[0].var_name = p[1].var_name + [p3val]
                 try:
@@ -973,7 +923,7 @@ class Parser:
                         p[0].var_name[0], p.lineno(1)
                     )
                 except:
-                    self.symtab.error = 1
+                    self.symtab.error = True
                     print(
                         bcolors.FAIL
                         + "Invalid usage of '.' operator at line"
@@ -1050,7 +1000,7 @@ class Parser:
                 p[0] = Node("FuncCall", [p[1]])
 
                 if p[1] is None:
-                    self.symtab.error = 1
+                    self.symtab.error = True
                     print(
                         bcolors.FAIL
                         + "Unable to call non-function at line "
@@ -1085,7 +1035,7 @@ class Parser:
                     p[0].type = p[1].ret_type
 
                 p[0].var_name = p[1].var_name
-                if self.symtab.error:
+                if self.symtab.error == True:
                     return
                 p[0].temp = self.three_address_code.create_temp_var()
                 self.symtab.insert_symbol(p[0].temp, 0)
@@ -1136,10 +1086,10 @@ class Parser:
                 p[0] = Node("->", children=[p[1], p[3]])
 
                 if p[1] == None or p[1].type == None or p[1].type == []:
-                    self.symtab.error = 1
+                    self.symtab.error = True
                     print(
                         bcolors.FAIL
-                        + "Invalid request for member of object that is not a structure/union at line "
+                        + "Invalid request for member of object that is not a structure at line "
                         + str(p.lineno(2))
                         + bcolors.ENDC
                     )
@@ -1148,11 +1098,11 @@ class Parser:
                 if p[1].type is None:
                     p[1].type = []
 
-                if "struct *" not in p[1].type and "union *" not in p[1].type:
+                if "struct *" not in p[1].type:
                     self.symtab.error = True
                     print(
                         bcolors.FAIL
-                        + "Requested an invalid member of object which isn't a structure/union at Line No.: "
+                        + "Requested an invalid member of object which isn't a structure at Line No.: "
                         + str(p.lineno(2))
                         + bcolors.ENDC
                     )
@@ -1161,7 +1111,7 @@ class Parser:
                     self.symtab.error = True
                     print(
                         bcolors.FAIL
-                        + "Requested an invalid member of object which doesn't belong to the structure/union at Line No.: "
+                        + "Requested an invalid member of object which doesn't belong to the structure at Line No.: "
                         + str(p.lineno(2))
                         + bcolors.ENDC
                     )
@@ -1222,12 +1172,6 @@ class Parser:
                             if single_type != "struct":
                                 p[0].type.append(single_type)
 
-                    if "union" in type_list:
-                        p[0].type.append("union")
-                        for single_type in type_list:
-                            if single_type != "union":
-                                p[0].type.append(single_type)
-
                     if narr > 0:
                         temp_type = []
                         temp_type.append(p[0].type[0])
@@ -1262,22 +1206,20 @@ class Parser:
                                 temp_type.append(p[0].type[i])
                         p[0].type = temp_type
 
-                    if "struct" in p[0].type[0] or "union" in p[0].type[0]:
+                    if "struct" in p[0].type[0]:
 
                         strtype = ""
                         if "struct" in p[0].type[0]:
                             strtype = "struct"
-                        elif "union" in p[0].type[0]:
-                            strtype = "union"
                         typet = self.symtab.return_type_tab_entry_su(
                             p[0].type[1], strtype, p.lineno(3)
                         )
                         p[0].vars = typet["vars"]
 
-                    if "struct" not in p[0].type and "union" not in p[0].type:
+                    if "struct" not in p[0].type:
                         p[0].is_var = True
 
-                if self.symtab.error:
+                if self.symtab.error == True:
                     return
 
                 p[0].var_name = p[1].var_name + [p3val]
@@ -1312,7 +1254,7 @@ class Parser:
                         p[0].var_name[0], p.lineno(1)
                     )
                 except:
-                    self.symtab.error = 1
+                    self.symtab.error = True
                     print(
                         bcolors.FAIL
                         + "Invalid usage of '->' operator at line "
@@ -1380,7 +1322,7 @@ class Parser:
                     or p[1].type == []
                     or p[1].parameters is None
                 ):
-                    self.symtab.error = 1
+                    self.symtab.error = True
                     print(
                         bcolors.FAIL
                         + "Cannot perform function call at line "
@@ -1390,7 +1332,7 @@ class Parser:
                     return
 
                 elif "function" not in p[1].type:
-                    self.symtab.error = 1
+                    self.symtab.error = True
                     print(
                         bcolors.FAIL
                         + "Cannot call non-function at line "
@@ -1400,14 +1342,14 @@ class Parser:
                     return
 
                 elif p[3].parameter_nums != p[1].parameter_nums:
-                    self.symtab.error = 1
+                    self.symtab.error = True
                     print(
                         bcolors.FAIL
                         + "Incorrect number of parameters (given: "
                         + str(p[3].parameter_nums)
                         + ", required: "
                         + str(p[1].parameter_nums)
-                        + " at line "
+                        + ") at line "
                         + str(p.lineno(2))
                         + bcolors.ENDC
                     )
@@ -1477,12 +1419,6 @@ class Parser:
                                 if single_type != "struct":
                                     paramtype.append(single_type)
 
-                        if "union" in type_list:
-                            paramtype.append("union")
-                            for single_type in type_list:
-                                if single_type != "union":
-                                    paramtype.append(single_type)
-
                         if isarr > 0:
                             temp_type = []
                             temp_type.append(paramtype[0])
@@ -1524,7 +1460,7 @@ class Parser:
                             or paramtype == []
                             or p[3].parameters[ctr] == []
                         ):
-                            self.symtab.error = 1
+                            self.symtab.error = True
                             print(
                                 bcolors.FAIL
                                 + "Cannot call function at line "
@@ -1533,16 +1469,15 @@ class Parser:
                             )
                             return
 
-                        if ("struct" in paramtype or "union" in paramtype) and (
+                        if ("struct" in paramtype) and (
                             "struct" not in p[3].parameters[ctr]
-                            and "union" not in p[3].parameters[ctr]
                         ):
-                            self.symtab.error = 1
+                            self.symtab.error = True
                             print(
                                 bcolors.FAIL
-                                + "Need struct/union value "
+                                + "Need struct value "
                                 + str(paramtype)
-                                + " to call function but got non- struct/union type "
+                                + " to call function but got non- struct type "
                                 + str(p[3].parameters[ctr])
                                 + " at line "
                                 + str(p.lineno(2))
@@ -1550,18 +1485,15 @@ class Parser:
                             )
                             return
 
-                        if (
-                            "struct" not in paramtype and "union" not in paramtype
-                        ) and (
+                        if ("struct" not in paramtype) and (
                             "struct" in p[3].parameters[ctr]
-                            or "union" in p[3].parameters[ctr]
                         ):
-                            self.symtab.error = 1
+                            self.symtab.error = True
                             print(
                                 bcolors.FAIL
-                                + "Need non-struct/union value "
+                                + "Need non-struct value "
                                 + str(paramtype)
-                                + " to call function but got struct/union type "
+                                + " to call function but got struct type "
                                 + str(p[3].parameters[ctr])
                                 + " at line "
                                 + str(p.lineno(2))
@@ -1574,24 +1506,10 @@ class Parser:
                             and "struct" in p[3].parameters[ctr]
                             and paramtype[1] != p[3].parameters[ctr][1]
                         ):
-                            self.symtab.error = 1
+                            self.symtab.error = True
                             print(
                                 bcolors.FAIL
                                 + "Incompatible struct types to call function at line "
-                                + str(p.lineno(2))
-                                + bcolors.ENDC
-                            )
-                            return
-
-                        if (
-                            "union" in paramtype
-                            and "union" in p[3].parameters[ctr]
-                            and paramtype[1] != p[3].parameters[ctr][1]
-                        ):
-                            self.symtab.error = 1
-                            print(
-                                bcolors.FAIL
-                                + "Incompatible union types to call function at line "
                                 + str(p.lineno(2))
                                 + bcolors.ENDC
                             )
@@ -1603,7 +1521,7 @@ class Parser:
                             not in ["bool", "char", "short", "int", "float"]
                             and p[3].parameters[ctr][0][-1] != "*"
                         ):
-                            self.symtab.error = 1
+                            self.symtab.error = True
                             print(
                                 bcolors.FAIL
                                 + "Invalid parameter type to call function at line "
@@ -1619,7 +1537,7 @@ class Parser:
                             and p[3].parameters[ctr][0]
                             in ["bool", "char", "short", "int", "float"]
                         ):
-                            self.symtab.error = 1
+                            self.symtab.error = True
                             print(
                                 bcolors.FAIL
                                 + "Invalid parameter type to call function at line "
@@ -1635,7 +1553,7 @@ class Parser:
                             and p[3].parameters[ctr][0][-1] != "*"
                             and "str" not in p[3].parameters[ctr]
                         ):
-                            self.symtab.error = 1
+                            self.symtab.error = True
                             print(
                                 bcolors.FAIL
                                 + "Incompatible assignment between pointer and "
@@ -1646,7 +1564,7 @@ class Parser:
                             )
                             return
 
-                        if self.symtab.error:
+                        if self.symtab.error == True:
                             return
 
                         isin = True
@@ -1714,7 +1632,7 @@ class Parser:
                     p[0].type = p[1].ret_type
 
                 p[0].var_name = p[1].var_name
-                if self.symtab.error:
+                if self.symtab.error == True:
                     return
 
                 p[0].temp = self.three_address_code.create_temp_var()
@@ -1761,7 +1679,7 @@ class Parser:
                 math_funcs_list_double = ["pow", "fmod"]
                 for arg in reversed(p[3].argument_list):
                     if p[1].label == "printf":
-                        if arg[0][0] == "$":
+                        if arg[0][0] == "$'":
                             self.three_address_code.emit("param", arg[0], "", "")
                         else:
                             if "float" in arg[1]:
@@ -1821,10 +1739,10 @@ class Parser:
                                         "param", arg[0], f"${datatype_size[req_type]}"
                                     )
                             else:
-                                self.symtab.error = 1
+                                self.symtab.error = True
                                 print(
                                     bcolors.FAIL
-                                    + "Invalid type given in line number "
+                                    + "1 Invalid type given in line number "
                                     + str(p.lineno(4))
                                     + bcolors.ENDC
                                 )
@@ -1860,7 +1778,7 @@ class Parser:
                     or p[1].type is None
                     or p[1].type == []
                 ):
-                    self.symtab.error = 1
+                    self.symtab.error = True
                     print(
                         bcolors.FAIL
                         + "Invalid call to access array element at line "
@@ -1874,7 +1792,7 @@ class Parser:
                     flag = 1
 
                 if flag == 0:
-                    self.symtab.error = 1
+                    self.symtab.error = True
                     print(
                         bcolors.FAIL
                         + "Invalid array subscript of type "
@@ -1886,7 +1804,7 @@ class Parser:
                     return
                 else:
                     if p[1].type[0][-1] != "*":
-                        self.symtab.error = 1
+                        self.symtab.error = True
                         print(
                             bcolors.FAIL
                             + "Expression of type "
@@ -1916,7 +1834,7 @@ class Parser:
                             if p[1].type[i][0] == "[" and p[1].type[i][-1] == "]":
                                 p[0].type.append(p[1].type[i])
 
-                        if "struct" in p[0].type[0] or "union" in p[0].type[0]:
+                        if "struct" in p[0].type[0]:
                             p[0].vars = p[1].vars
 
                 p[0].var_name = p[1].var_name
@@ -2019,7 +1937,7 @@ class Parser:
                         self.three_address_code.emit("=_int", p[0].temp, p[3].temp, "")
                     else:
                         if len(p[0].dim_list) == 0:
-                            self.symtab.error = 1
+                            self.symtab.error = True
                             return
                         curDimension = p[0].dim_list[-1]
                         self.three_address_code.emit(
@@ -2037,7 +1955,7 @@ class Parser:
                                 "*_int", p[0].temp, p[0].temp, "$4"
                             )
                         else:
-                            if "struct" == p[0].type[0] or "union" == p[0].type[0]:
+                            if "struct" == p[0].type[0]:
                                 strtype = p[0].type[0] + " " + p[0].type[1]
                                 self.three_address_code.emit(
                                     "*_int",
@@ -2054,7 +1972,7 @@ class Parser:
                                 )
 
                         if p[1].address is None or p[1].address == "":
-                            self.symtab.error = 1
+                            self.symtab.error = True
                             return
                         var = p[1].address[4]
                         p1_addr = p[1].address
@@ -2079,7 +1997,7 @@ class Parser:
         argument_expression_list : assignment_expression
                                 | argument_expression_list ',' assignment_expression
         """
-        if self.error:
+        if self.error == True:
             return
         if len(p) == 2:
             p[0] = p[1]
@@ -2088,8 +2006,6 @@ class Parser:
             p[0].parameter_nums = 1
             p[0].parameters = []
             p[0].parameters.append(p[1].type)
-            if p[1].type is None:
-                p[1].type = ["Dummy"]
             p[0].argument_list = [[p[1].temp, p[1].type]]
 
         elif len(p) == 4:
@@ -2120,7 +2036,7 @@ class Parser:
                         | SIZEOF unary_expression
                         | SIZEOF '(' type_name ')'
         """
-        if self.error:
+        if self.error == True:
             return
 
         if len(p) == 2:
@@ -2138,7 +2054,10 @@ class Parser:
                         + bcolors.ENDC
                     )
 
-                elif p[2].type[0] not in ["int", "char", "short"]:
+                elif (
+                    p[2].type[0] not in ["int", "char", "short"]
+                    and p[2].type[0][-1] != "*"
+                ):
                     self.symtab.error = True
                     print(
                         bcolors.FAIL
@@ -2176,7 +2095,7 @@ class Parser:
                         p[2].type = []
                     p[0].type = p[2].type
 
-                if self.symtab.error:
+                if self.symtab.error == True:
                     return
 
                 p[0].var_name = p[2].var_name
@@ -2220,7 +2139,7 @@ class Parser:
             elif p[1] == "sizeof":
                 p[0] = Node("SIZEOF", [p[2]])
                 p[0].type = ["int"]
-                if self.symtab.error:
+                if self.symtab.error == True:
                     return
                 p[0].temp = self.three_address_code.create_temp_var()
                 self.symtab.insert_symbol(p[0].temp, 0)
@@ -2250,10 +2169,10 @@ class Parser:
 
                 p[0].var_name = p[2].var_name
                 if p[2].type is None or p[2].type == []:
-                    self.symtab.error = 1
+                    self.symtab.error = True
                     print(
                         bcolors.FAIL
-                        + f"Invalid type given in line number {p.lineno(1)}"
+                        + f"2 Invalid type given in line number {p.lineno(1)}"
                     )
                     return
                 new_p2_list = []
@@ -2275,10 +2194,10 @@ class Parser:
                         "=_int", p[0].temp, f"${multiplier*datatype_size[req_type]}"
                     )
                 else:
-                    self.symtab.error = 1
+                    self.symtab.error = True
                     print(
                         bcolors.FAIL
-                        + f"Invalid type given in line number {p.lineno(1)}"
+                        + f"3 Invalid type given in line number {p.lineno(1)}"
                     )
                     return
                 p[0].true_list.append(self.TAC.nextstat)
@@ -2428,7 +2347,6 @@ class Parser:
                         elif (
                             len(p[2].type) > 0
                             and "struct" != p[2].type[0]
-                            and "union" != p[2].type[0]
                             and p[2].is_var == 0
                         ):
                             self.symtab.error = True
@@ -2441,11 +2359,7 @@ class Parser:
                                 + bcolors.ENDC
                             )
                             return
-                        elif (
-                            len(p[2].type) > 0
-                            and "struct" == p[2].type[0]
-                            or "union" == p[2].type[0]
-                        ):
+                        elif len(p[2].type) > 0 and "struct" == p[2].type[0]:
                             p[0].type = p[2].type
                             p[0].type[0] += " *"
                             p[0].vars = p[2].vars
@@ -2458,7 +2372,7 @@ class Parser:
                     except:
                         p[0].insert_edge([p[2]])
 
-                if self.symtab.error:
+                if self.symtab.error == True:
                     return
 
                 if p[2].totype is not None and p[2].totype != p[2].type:
@@ -2528,7 +2442,7 @@ class Parser:
                             p[2].var_name[0]
                         )
                     except:
-                        self.symtab.error = 1
+                        self.symtab.error = True
                         print(
                             bcolors.FAIL
                             + f"Invalid usage of UNARY* operator at line {p[1].lineno}"
@@ -2579,7 +2493,7 @@ class Parser:
         elif len(p) == 5:
             p[0] = Node("SIZEOF", [p[3]])
             p[0].type = ["int"]
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
 
             p[0].temp = self.three_address_code.create_temp_var()
@@ -2610,8 +2524,10 @@ class Parser:
                 p[0].temp = found["temp"]
 
             if p[3].type is None or p[3].type == []:
-                self.symtab.error = 1
-                print(bcolors.FAIL + f"Invalid type given in line number {p.lineno(1)}")
+                self.symtab.error = True
+                print(
+                    bcolors.FAIL + f"4 Invalid type given in line number {p.lineno(1)}"
+                )
                 return
             req_type = "void"
             if "*" in p[3].type:
@@ -2624,8 +2540,10 @@ class Parser:
                     "=_int", p[0].temp, f"${datatype_size[req_type]}"
                 )
             else:
-                self.symtab.error = 1
-                print(bcolors.FAIL + f"Invalid type given in line number {p.lineno(1)}")
+                self.symtab.error = True
+                print(
+                    bcolors.FAIL + f"5 Invalid type given in line number {p.lineno(1)}"
+                )
                 return
             p[0].true_list.append(self.three_address_code.next_statement)
             p[0].false_list.append(self.three_address_code.next_statement + 1)
@@ -2641,7 +2559,7 @@ class Parser:
                     | '~'
                     | '!'
         """
-        if self.error:
+        if self.error == True:
             return
         p[0] = Node("UNARY" + str(p[1]))
         p[0].lineno = p.lineno(1)
@@ -2651,7 +2569,7 @@ class Parser:
         cast_expression : unary_expression
                         | '(' type_name ')' cast_expression
         """
-        if self.error:
+        if self.error == True:
             return
 
         if len(p) == 2:
@@ -2667,7 +2585,7 @@ class Parser:
                 or p[4].type is None
                 or p[4].type == []
             ):
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Cannot perform casting at line "
@@ -2688,7 +2606,7 @@ class Parser:
                     and single_type[-1] == "]"
                 ):
                     if single_type[1:-1] == "":
-                        self.symtab.error = 1
+                        self.symtab.error = True
                         print(
                             bcolors.FAIL
                             + "Cannot have empty indices for array declarations at line "
@@ -2697,7 +2615,7 @@ class Parser:
                         )
                         return
                     elif int(single_type[1:-1]) <= 0:
-                        self.symtab.error = 1
+                        self.symtab.error = True
                         print(
                             bcolors.FAIL
                             + "Cannot have non-positive integers for array declarations at line "
@@ -2706,7 +2624,7 @@ class Parser:
                         )
                         return
             if len(temp2_type_list) != len(set(temp2_type_list)):
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "variables cannot have duplicating type of declarations at line "
@@ -2715,7 +2633,7 @@ class Parser:
                 )
                 return
             if "unsigned" in p[2].type and "signed" in p[2].type:
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Variable cannot be both signed and unsigned at line "
@@ -2744,10 +2662,8 @@ class Parser:
                     data_type_count += 1
                 if "struct" in p[2].type:
                     data_type_count += 1
-                if "union" in p[2].type:
-                    data_type_count += 1
                 if data_type_count > 1:
-                    self.symtab.error = 1
+                    self.symtab.error = True
                     print(
                         bcolors.FAIL
                         + "Two or more conflicting data types specified for variable at line "
@@ -2820,11 +2736,6 @@ class Parser:
                     if single_type != "struct":
                         p[0].type.append(single_type)
 
-            if "union" in type_list:
-                p[0].type.append("union")
-                for single_type in type_list:
-                    if single_type != "union":
-                        p[0].type.append(single_type)
             if isarr > 0:
                 temp_type = []
                 temp_type.append(p[0].type[0])
@@ -2859,7 +2770,7 @@ class Parser:
                 p[0].type = temp_type
 
             if p[2].type is None or p[4].type is None or p[0].type is None:
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Cannot perform casting at line "
@@ -2871,7 +2782,7 @@ class Parser:
                 and "*" not in p[2].type
                 and "struct" not in p[4].type
             ):
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Cannot cast non-struct value "
@@ -2888,40 +2799,10 @@ class Parser:
                 and "struct" in p[4].type
                 and p[4].type[1] not in p[2].type
             ):
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Incompatible struct types to perform casting at line "
-                    + str(p.lineno(1))
-                    + bcolors.ENDC
-                )
-
-            elif (
-                "union" in p[2].type
-                and "*" not in p[2].type
-                and "union" not in p[4].type
-            ):
-                self.symtab.error = 1
-                print(
-                    bcolors.FAIL
-                    + "Cannot cast non-union value "
-                    + str(p[4].type)
-                    + " to union type "
-                    + str(p[2].type)
-                    + " at line "
-                    + str(p.lineno(1))
-                    + bcolors.ENDC
-                )
-
-            elif (
-                "union" in p[2].type
-                and "union" in p[4].type
-                and p[4].type[1] not in p[2].type
-            ):
-                self.symtab.error = 1
-                print(
-                    bcolors.FAIL
-                    + "Incompatible union types to perform casting at line "
                     + str(p.lineno(1))
                     + bcolors.ENDC
                 )
@@ -2931,7 +2812,7 @@ class Parser:
                 and p[4].type[0] not in ["bool", "char", "short", "int", "float"]
                 and p[4].type[0][-1] != "*"
             ):
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Type mismatch while casting value at line "
@@ -2944,7 +2825,7 @@ class Parser:
                 and p[4].type[0] not in ["bool", "char", "short", "int"]
                 and p[4].type[0][-1] != "*"
             ):
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Incompatible casting between pointer and "
@@ -2955,7 +2836,7 @@ class Parser:
                 )
             p[4].totype = p[0].type
 
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
 
             p[0].temp = self.three_address_code.create_temp_var()
@@ -3011,7 +2892,7 @@ class Parser:
                                 | multiplicative_expression '/' cast_expression
                                 | multiplicative_expression '%' cast_expression
         """
-        if self.error:
+        if self.error == True:
             return
         if len(p) == 2:
             p[0] = p[1]
@@ -3024,7 +2905,7 @@ class Parser:
                 or p[1].type == []
                 or p[3].type == []
             ):
-                self.error = 1
+                self.error = True
                 print(
                     bcolors.FAIL
                     + "Unable to multiply the two expressions at Line No.: "
@@ -3036,7 +2917,7 @@ class Parser:
                 if p[1].type[0] not in ["bool", "char", "short", "int"] or p[3].type[
                     0
                 ] not in ["bool", "char", "short", "int"]:
-                    self.symtab.error = 1
+                    self.symtab.error = True
                     print(
                         bcolors.FAIL
                         + "Cannot perform modulo operation between expressions of type {p[1].type} and {p[3].type} only line {p.lineno(2)}"
@@ -3153,7 +3034,7 @@ class Parser:
                     + bcolors.ENDC
                 )
 
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             if p[1].totype is not None and p[1].totype != p[1].type:
                 p1.temp = self.three_address_code.create_temp_var()
@@ -3280,10 +3161,10 @@ class Parser:
                             | additive_expression '+' multiplicative_expression
                             | additive_expression '-' multiplicative_expression
         """
-        if self.error:
+        if self.error == True:
             return
-        temp_list_aa = ["char", "short", "int", "float"]
-        temp_list_ii = ["char", "short", "int"]
+        temp_list_aa = ["bool", "char", "short", "int", "float"]
+        temp_list_ii = ["bool", "char", "short", "int"]
         if len(p) == 2:
             p[0] = p[1]
         elif len(p) == 4:
@@ -3295,7 +3176,7 @@ class Parser:
                 or p[1].type == []
                 or p[3].type == []
             ):
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Cannot perform additive operation between expressions on line"
@@ -3379,7 +3260,7 @@ class Parser:
                 and p[1].type[0] in ["bool", "char", "short", "int"]
                 and str(p[2]) == "+"
             ):
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Pointer Arithmetic Not allowed at line "
@@ -3394,7 +3275,7 @@ class Parser:
                 and p[1].type[0] in temp_list_ii
                 and str(p[2]) == "-"
             ):
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Invalid binary - operation between incompatible types {p[1].type} and {p[3].type} on line {p.lineno(2)}"
@@ -3413,7 +3294,7 @@ class Parser:
                     + bcolors.ENDC
                 )
 
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
 
             if p[1].totype is not None and p[1].totype != p[1].type:
@@ -3544,7 +3425,7 @@ class Parser:
                         | shift_expression LEFT_OP additive_expression
                         | shift_expression RIGHT_OP additive_expression
         """
-        if self.error:
+        if self.error == True:
             return
 
         if len(p) == 2:
@@ -3631,7 +3512,7 @@ class Parser:
                     + bcolors.ENDC
                 )
 
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             if p[1].totype is not None and p[1].totype != p[1].type:
                 p1.temp = self.three_address_code.create_temp_var()
@@ -3762,14 +3643,14 @@ class Parser:
                             | relational_expression LE_OP shift_expression
                             | relational_expression GE_OP shift_expression
         """
-        if self.error:
+        if self.error == True:
             return
         if len(p) == 2:
             p[0] = p[1]
 
         elif len(p) == 4:
 
-            temp_list = ["char", "short", "int", "float"]
+            temp_list = ["bool", "char", "short", "int", "float"]
             if (
                 p[1] is None
                 or p[3] is None
@@ -3824,7 +3705,7 @@ class Parser:
                 if p[1].totype != None and p[1].totype != p[1].type:
                     p1str = "to"
                     for single_type in p[1].totype:
-                        p1str += "_" + single_type
+                        p1str = p1str + "_" + single_type
                     p1 = Node(p1str, [p[1]])
                 else:
                     p1 = p[1]
@@ -3839,7 +3720,7 @@ class Parser:
                 if p[3].totype != None and p[3].totype != p[3].type:
                     p3str = "to"
                     for single_type in p[3].totype:
-                        p3str += "_" + single_type
+                        p3str = p3str + "_" + single_type
                     p3 = Node(p3str, [p[3]])
                 else:
                     p3 = p[3]
@@ -3856,7 +3737,7 @@ class Parser:
             ):
                 p[0] = Node(str(p[2]), [p[1], p[3]])
                 p[0].type = ["int"]
-                p[0].label += "_str"
+                p[0].label = p[0].label + "_str"
                 p[0].label = p[0].label.replace(" ", "_")
                 p[0].node.attr["label"] = p[0].label
 
@@ -3879,9 +3760,9 @@ class Parser:
                 )
 
             elif (
-                len(p[1].type) > 0
+                len(p[3].type) > 0
                 and p[3].type[0][-1] == "*"
-                and len(p[3].type) > 0
+                and len(p[1].type) > 0
                 and p[1].type[0] in ["float"]
             ):
                 self.symtab.error = True
@@ -3898,13 +3779,11 @@ class Parser:
 
             elif (
                 (
-                    (len(p[3].type) > 0 and p[1].type[0][-1] == "*")
-                    or (len(p[3].type) > 0 and p[3].type[0][-1] == "*")
+                    (len(p[3].type) > 0 and p[3].type[0][-1] == "*")
+                    or (len(p[1].type) > 0 and p[1].type[0][-1] == "*")
                 )
                 and "struct" not in p[1].type
-                and "union" not in p[1].type
                 and "struct" not in p[3].type
-                and "union" not in p[3].type
             ):
                 p[1].totype = ["int", "unsigned"]
                 p1 = Node("to_int_unsigned", [p[1]])
@@ -3912,7 +3791,7 @@ class Parser:
                 p3 = Node("to_int_unsigned", [p[3]])
                 p[0] = Node(str(p[2]), [p1, p3])
                 p[0].type = ["int"]
-                p[0].label += "_*"
+                p[0].label = p[0].label + "_*"
                 p[0].label = p[0].label.replace(" ", "_")
                 p[0].node.attr["label"] = p[0].label
 
@@ -3928,7 +3807,7 @@ class Parser:
                     + str(p.lineno(2))
                     + bcolors.ENDC
                 )
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             if p[1].totype is not None and p[1].totype != p[1].type:
                 p1.temp = self.three_address_code.create_temp_var()
@@ -4063,7 +3942,7 @@ class Parser:
 
         if len(p) == 4:
 
-            temp_list_a = ["char", "short", "int", "float"]
+            temp_list_a = ["bool", "char", "short", "int", "float"]
 
             if (
                 p[1] is None
@@ -4152,7 +4031,7 @@ class Parser:
                 if p[1].totype != None and p[1].totype != p[1].type:
                     p1str = "to"
                     for single_type in p[1].totype:
-                        p1str += "_" + single_type
+                        p1str = p1str + "_" + single_type
                     p1 = Node(p1str, [p[1]])
                 else:
                     p1 = p[1]
@@ -4216,7 +4095,7 @@ class Parser:
                 and len(p[3].type) > 0
                 and p[3].type[0] == "float"
             ):
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Relational operation between incompatible types"
@@ -4233,7 +4112,7 @@ class Parser:
                 and len(p[1].type) > 0
                 and p[1].type[0] == "float"
             ):
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Relational operation between incompatible types"
@@ -4251,8 +4130,6 @@ class Parser:
                 )
                 and "struct" not in p[1].type
                 and "struct" not in p[3].type
-                and "union" not in p[1].type
-                and "union" not in p[3].type
             ):
                 p[1].totype = ["int", "unsigned"]
                 p1 = Node("to_int_unsigned", [p[1]])
@@ -4265,7 +4142,7 @@ class Parser:
                 p[0].label = p[0].label.replace(" ", "_")
                 p[0].node.attr["label"] = p[0].label
             else:
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Equality check operation between incompatible types"
@@ -4276,7 +4153,7 @@ class Parser:
                     + str(p.lineno(1))
                     + bcolors.ENDC
                 )
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             if p[1].totype is not None and p[1].totype != p[1].type:
                 p1.temp = self.three_address_code.create_temp_var()
@@ -4408,7 +4285,7 @@ class Parser:
                     | and_expression '&' equality_expression
         """
         temp_list = ["bool", "char", "short", "int"]
-        if self.error:
+        if self.error == True:
             return
         if len(p) == 2:
             p[0] = p[1]
@@ -4488,7 +4365,7 @@ class Parser:
                     + bcolors.ENDC
                 )
 
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             if p[1].totype is not None and p[1].totype != p[1].type:
                 p1.temp = self.three_address_code.create_temp_var()
@@ -4617,7 +4494,7 @@ class Parser:
                                 | exclusive_or_expression '^' and_expression
         """
         temp_list_ii = ["bool", "char", "short", "int"]
-        if self.error:
+        if self.error == True:
             return
 
         if len(p) == 2:
@@ -4650,7 +4527,7 @@ class Parser:
 
                 if "unsigned" in p[1].type or "unsigned" in p[3].type:
                     p0type.append("unsigned")
-                    p[0].label += "unsigned"
+                    p[0].label += "_unsigned"
 
                 p0label = p0label.replace(" ", "_")
 
@@ -4659,7 +4536,6 @@ class Parser:
                     if single_type not in p[1].type:
                         isIn = 0
                 if isIn == 0:
-                    p[1].totype = p[0].type
                     p[1].totype = p0type
                     strp1 = "to_"
                     for single_type in p[1].totype:
@@ -4698,7 +4574,7 @@ class Parser:
                     + " is incompatible."
                     + bcolors.ENDC
                 )
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
 
             if p[1].totype is not None and p[1].totype != p[1].type:
@@ -4829,7 +4705,7 @@ class Parser:
                                 | inclusive_or_expression '|' exclusive_or_expression
         """
         temp_list = ["bool", "char", "short", "int"]
-        if self.error:
+        if self.error == True:
             return
         if len(p) == 2:
             p[0] = p[1]
@@ -4862,7 +4738,7 @@ class Parser:
 
                 if "unsigned" in p[1].type or "unsigned" in p[3].type:
                     p[0].type.append("unsigned")
-                    p[0].label += "unsigned"
+                    p[0].label += "_unsigned"
                 p[0].node.attr["label"] = p[0].label
 
                 flag = True
@@ -4910,7 +4786,7 @@ class Parser:
                     + bcolors.ENDC
                 )
 
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
 
             if p[1].totype is not None and p[1].totype != p[1].type:
@@ -5039,7 +4915,7 @@ class Parser:
         """logical_and_expression : inclusive_or_expression
         | logical_and_expression AND_OP marker_global inclusive_or_expression marker_global
         """
-        if self.error:
+        if self.error == True:
             return
         if len(p) == 2:
             p[0] = p[1]
@@ -5052,20 +4928,15 @@ class Parser:
                 or p[1].type == []
                 or p[4].type == []
             ):
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Cannot perform logical and between expressions on line"
                     + str(p.lineno(2))
                     + bcolors.ENDC
                 )
-            elif (
-                "struct" in p[1].type
-                or "union" in p[1].type
-                or "struct" in p[1].type
-                or "union" in p[1].type
-            ):
-                self.symtab.error = 1
+            elif "struct" in p[1].type:
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Need scalars to perform logical operation at line"
@@ -5075,7 +4946,7 @@ class Parser:
             else:
                 p[0] = Node(str(p[2]), [p[1], p[4]])
                 p[0].type = ["int"]
-                if self.symtab.error:
+                if self.symtab.error == True:
                     return
                 self.three_address_code.backpatch(p[1].true_list, p[3].quadruples)
                 self.three_address_code.backpatch(p[1].false_list, p[5].quadruples)
@@ -5132,7 +5003,7 @@ class Parser:
         """logical_or_expression : logical_and_expression
         | logical_or_expression OR_OP marker_global logical_and_expression marker_global
         """
-        if self.error:
+        if self.error == True:
             return
         if len(p) == 2:
             p[0] = p[1]
@@ -5146,20 +5017,15 @@ class Parser:
                 or p[1].type == []
                 or p[4].type == []
             ):
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Cannot perform logical or between expressions on line"
                     + str(p.lineno(2))
                     + bcolors.ENDC
                 )
-            elif (
-                "struct" in p[1].type
-                or "union" in p[1].type
-                or "struct" in p[1].type
-                or "union" in p[1].type
-            ):
-                self.symtab.error = 1
+            elif "struct" in p[1].type:
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Need scalars to perform logical operation at line"
@@ -5169,7 +5035,7 @@ class Parser:
             else:
                 p[0] = Node(str(p[2]), [p[1], p[4]])
                 p[0].type = ["int"]
-                if self.symtab.error:
+                if self.symtab.error == True:
                     return
                 self.three_address_code.backpatch(p[1].false_list, p[3].quadruples)
                 self.three_address_code.backpatch(p[1].true_list, p[5].quadruples)
@@ -5219,19 +5085,19 @@ class Parser:
 
     def p_conditional_expression(self, p):
         """conditional_expression : logical_or_expression
-        | logical_or_expression '?' marker_global expression ':' conditional_expression marker_global
+        | logical_or_expression '?' marker_global expression ':' marker_global conditional_expression marker_global
         """
         temp_list_aa = ["bool", "char", "short", "int", "float"]
         temp_list_ii = ["bool", "char", "short", "int"]
         temp_list_di = ["char", "short", "int"]
-        if self.error:
+        if self.error == True:
             return
         if len(p) == 2:
             p[0] = p[1]
 
         elif len(p) == 9:
             if p[1] is None or p[1].type is None or p[1].type == []:
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Cannot perform conditional operation at line "
@@ -5239,16 +5105,16 @@ class Parser:
                     + bcolors.ENDC
                 )
                 return
-            if "struct" in p[1].type or "union" in p[1].type:
-                self.symtab.error = 1
+            if "struct" in p[1].type:
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
-                    + "Struct / Union type variable not allowed as first operand of ternary operator"
+                    + "Struct type variable not allowed as first operand of ternary operator"
                     + bcolors.ENDC
                 )
                 return
             elif p[4] is None or p[7] is None:
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Cannot perform conditional operation at line"
@@ -5257,7 +5123,7 @@ class Parser:
                 )
                 return
             elif p[4].type in [None, []] or p[7].type in [None, []]:
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Cannot perform conditional operation at line"
@@ -5266,7 +5132,7 @@ class Parser:
                 )
                 return
             elif "struct" in p[4].type and "struct" not in p[7].type:
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Type mismatch between "
@@ -5279,7 +5145,7 @@ class Parser:
                 )
                 return
             elif "struct" in p[7].type and "struct" not in p[4].type:
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Type mismatch between "
@@ -5296,49 +5162,10 @@ class Parser:
                 and "struct" in p[7].type
                 and p[4].type[1] != p[7].type[1]
             ):
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Incompatible struct types to perform conditional operation at line"
-                    + str(p.lineno(2))
-                    + bcolors.ENDC
-                )
-                return
-            elif "union" in p[4].type and "union" not in p[7].type:
-                self.symtab.error = 1
-                print(
-                    bcolors.FAIL
-                    + "Type mismatch between "
-                    + str(p[4].type)
-                    + " and "
-                    + str(p[7].type)
-                    + " for conditional operation at line"
-                    + str(p.lineno(2))
-                    + bcolors.ENDC
-                )
-                return
-            elif "union" in p[7].type and "union" not in p[4].type:
-                self.symtab.error = 1
-                print(
-                    bcolors.FAIL
-                    + "Type mismatch between "
-                    + str(p[4].type)
-                    + " and "
-                    + str(p[7].type)
-                    + " for conditional operation at line"
-                    + str(p.lineno(2))
-                    + bcolors.ENDC
-                )
-                return
-            elif (
-                "union" in p[4].type
-                and "union" in p[7].type
-                and p[4].type[1] != p[7].type[1]
-            ):
-                self.symtab.error = 1
-                print(
-                    bcolors.FAIL
-                    + "Incompatible union types to perform conditional operation at line"
                     + str(p.lineno(2))
                     + bcolors.ENDC
                 )
@@ -5348,7 +5175,7 @@ class Parser:
                 and p[4].type[0][-1] != "*"
                 and p[7].type[0] in temp_list_aa
             ):
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Type mismatch while performing conditional operation at line "
@@ -5362,7 +5189,7 @@ class Parser:
                 and p[7].type[0][-1] != "*"
                 and p[7].type[0] not in temp_list_ii
             ):
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Incompatible conditional operation between pointer and "
@@ -5377,7 +5204,7 @@ class Parser:
                 and p[4].type[0][-1] != "*"
                 and p[4].type[0] not in temp_list_ii
             ):
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Incompatible conditional operation between pointer and "
@@ -5387,7 +5214,7 @@ class Parser:
                     + bcolors.ENDC
                 )
                 return
-            isError = False
+            error_flag = False
             if p[4].type == p[7].type:
                 p0type = p[4].type
 
@@ -5437,8 +5264,8 @@ class Parser:
                 ):
                     p0type.append("unsigned")
             else:
-                isError = True
-            if isError == False:
+                error_flag = True
+            if not error_flag:
                 if p0type != p[4].type:
                     p4str = "to"
                     for single_type in p0type:
@@ -5457,7 +5284,7 @@ class Parser:
                     p7 = p[7]
                 p[0] = Node("TERNARY", [p[1], p4, p7])
                 p[0].type = p0type
-                if self.symtab.error:
+                if self.symtab.error == True:
                     return
                 p[4].totype = p0type
                 p4type = []
@@ -5613,7 +5440,7 @@ class Parser:
                 p[0].true_list = p[4].true_list + p[7].true_list
                 p[0].false_list = p[4].false_list + p[7].false_list
                 return
-            self.symtab.error = 1
+            self.symtab.error = True
             print(
                 bcolors.FAIL
                 + "Cannot perform conditional operation at line"
@@ -5626,7 +5453,7 @@ class Parser:
         assignment_expression : conditional_expression
                             | unary_expression assignment_operator assignment_expression
         """
-        if self.error:
+        if self.error == True:
             return
 
         if len(p) == 2:
@@ -5654,11 +5481,7 @@ class Parser:
                             + bcolors.ENDC
                         )
 
-                    elif (
-                        p[1].is_var == 0
-                        and "struct" not in p[1].type[0]
-                        and "union" not in p[1].type[0]
-                    ):
+                    elif p[1].is_var == 0 and "struct" not in p[1].type[0]:
                         self.symtab.error = True
                         print(
                             bcolors.FAIL
@@ -5690,33 +5513,6 @@ class Parser:
                             bcolors.FAIL
                             + "Incompatible struct types to perform assignment at line "
                             + str(p[2].lineno)
-                            + bcolors.ENDC
-                        )
-
-                    elif "union" in p[1].type and "union" not in p[3].type:
-                        self.symtab.error = True
-                        print(
-                            bcolors.FAIL
-                            + "Cannot assign non-struct value "
-                            + str(p[3].type)
-                            + " to struct type "
-                            + str(p[1].type)
-                            + " at line "
-                            + str(p[2].lineno)
-                            + bcolors.ENDC
-                        )
-
-                    elif (
-                        "union" in p[1].type
-                        and "union" in p[3].type
-                        and p[1].type[1] != p[3].type[1]
-                    ):
-                        self.symtab.error = True
-                        print(
-                            bcolors.FAIL
-                            + "Incompatible union types at line "
-                            + str(p[2].lineno)
-                            + " .Assignment not possible."
                             + bcolors.ENDC
                         )
 
@@ -5803,8 +5599,6 @@ class Parser:
 
                         if "struct" in p[0].type:
                             p[0].label += "_struct"
-                        elif "union" in p[0].type:
-                            p[0].label += "_union"
                         elif p[0].type[0][-1] == "*":
                             p[0].label += "_int_unsigned"
                         else:
@@ -5818,7 +5612,7 @@ class Parser:
             else:
                 if (p[3] is not None) and (p[3].node is not None):
                     p[0].insert_edge([p[3]])
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             if p[3].totype is not None and p[3].totype != p[3].type:
                 p3.temp = self.three_address_code.create_temp_var()
@@ -5874,7 +5668,7 @@ class Parser:
             self.three_address_code.emit("goto", "", "", "")
 
     def equate(self, p1type, p0label, p1temp, p3temp):
-        if p0label == "=_struct" or p0label == "=_union":
+        if p0label == "=_struct":
             data_struc = self.symtab.return_type_tab_entry_su(p1type[1], p1type[0])
             currOffset = 0
             left_offset = 0
@@ -5977,12 +5771,6 @@ class Parser:
                     self.equate(new_type, "=_struct", left_new_temp, right_new_temp)
                     if p0label == "=_struct":
                         currOffset += data_struc["vars"][var]["allocated_size"]
-                elif "union" in data_struc["vars"][var]["data_type"]:
-                    new_type = copy.deepcopy(data_struc["vars"][var]["data_type"])
-                    new_type.reverse()
-                    self.equate(new_type, "=_union", left_new_temp, right_new_temp)
-                    if p0label == "=_struct":
-                        currOffset += data_struc["vars"][var]["allocated_size"]
                 elif "int" in data_struc["vars"][var]["data_type"]:
                     self.three_address_code.emit("=_int", left_new_temp, right_new_temp)
                     if p0label == "=_struct":
@@ -6022,7 +5810,7 @@ class Parser:
                             | XOR_ASSIGN
                             | OR_ASSIGN
         """
-        if self.error:
+        if self.error == True:
             return
 
         p[0] = Node(str(p[1]))
@@ -6033,13 +5821,13 @@ class Parser:
         expression : assignment_expression
                 | expression ',' assignment_expression
         """
-        if self.error:
+        if self.error == True:
             return
         if len(p) == 2:
             p[0] = p[1]
         elif len(p) == 4:
             p[0] = Node(",", [p[1], p[3]])
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             p[0].temp = p[3].temp
             p[0].true_list = p[3].true_list
@@ -6049,7 +5837,7 @@ class Parser:
         """
         constant_expression	: conditional_expression
         """
-        if self.error:
+        if self.error == True:
             return
         p[0] = p[1]
 
@@ -6059,7 +5847,7 @@ class Parser:
         """
         initializer : assignment_expression
         """
-        if self.error:
+        if self.error == True:
             return
         if len(p) == 2:
             p[0] = p[1]
@@ -6073,7 +5861,7 @@ class Parser:
         """declaration	: declaration_specifiers ';'
         | declaration_specifiers init_declarator_list ';'
         """
-        if self.error:
+        if self.error == True:
             return
         if len(p) == 3:
             p[0] = Node("TypeDecl", create_ast=False)
@@ -6085,7 +5873,7 @@ class Parser:
         """declaration_specifiers : type_specifier
         | type_specifier declaration_specifiers
         """
-        if self.error:
+        if self.error == True:
             return
         if len(p) == 2:
             p[0] = p[1]
@@ -6098,14 +5886,6 @@ class Parser:
 
             p[0].extraVals = p[2].extraVals + p[0].extraVals
 
-        if 0 < len(p[0].type) and "union" in p[0].type and len(p[0].type) > 2:
-            self.symtab.error = True
-            print(
-                bcolors.FAIL
-                + "Cannot have type specifiers for union type at line "
-                + str(p[1].line)
-                + bcolors.ENDC
-            )
         elif 0 < len(p[0].type) and "struct" in p[0].type and len(p[0].type) > 2:
             self.symtab.error = True
             print(
@@ -6119,7 +5899,7 @@ class Parser:
         """init_declarator_list : init_declarator
         | init_declarator_list ',' marker_init init_declarator
         """
-        if self.error:
+        if self.error == True:
             return
         if len(p) == 2:
             p[0] = p[1]
@@ -6131,7 +5911,7 @@ class Parser:
         """
         marker_init :
         """
-        if self.error:
+        if self.error == True:
             return
         p[0] = Node("", create_ast=False)
         p[0].extraVals = p[-2].extraVals
@@ -6142,7 +5922,7 @@ class Parser:
         """
         temp_list_aa = ["bool", "char", "short", "int", "float"]
         temp_list_ii = ["bool", "char", "short", "int"]
-        if self.error:
+        if self.error == True:
             return
         if len(p) == 2:
             p[1].remove_graph()
@@ -6158,7 +5938,6 @@ class Parser:
         for var_name in p[0].variables:
             if p[0].variables[var_name] and p[0].variables[var_name][-1] in [
                 "struct",
-                "union",
             ]:
                 found = self.symtab.return_type_tab_entry_su(
                     p[0].variables[var_name][-2],
@@ -6212,7 +5991,7 @@ class Parser:
                     )
 
                 elif "struct" in p[0].variables[var_name]:
-                    if not self.symtab.is_global("dummy"):
+                    if not self.symtab.is_global():
                         struct_size = 0
                         found = self.symtab.return_type_tab_entry_su(
                             p[0].variables[var_name][-2],
@@ -6229,29 +6008,7 @@ class Parser:
                         )
                     else:
                         print("Struct objects not allowed to be declared globally...")
-                        self.symtab.error = 1
-                        return
-                elif "union" in p[0].variables[var_name]:
-                    if not self.symtab.is_global("dummy"):
-                        struct_size = 0
-                        found = self.symtab.return_type_tab_entry_su(
-                            p[0].variables[var_name][-2],
-                            p[0].variables[var_name][-1],
-                            p.lineno(1),
-                        )
-                        if found:
-                            struct_size = found["allocated_size"]
-                            for var in found["vars"]:
-                                found["vars"][var]["offset"] = 0
-                        self.symtab.modify_symbol(
-                            var_name,
-                            "allocated_size",
-                            multiplier * struct_size,
-                            p.lineno(1),
-                        )
-                    else:
-                        print("Union objects not allowed to be declared globally...")
-                        self.symtab.error = 1
+                        self.symtab.error = True
                         return
                 elif "float" in p[0].variables[var_name]:
                     self.symtab.modify_symbol(
@@ -6344,7 +6101,7 @@ class Parser:
                     + bcolors.ENDC
                 )
             elif "void" in entry["data_type"] and "*" not in entry["data_type"]:
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "Cannot have a void type variable at line "
@@ -6369,8 +6126,6 @@ class Parser:
                 if "void" in entry["data_type"]:
                     data_type_count += 1
                 if "struct" in entry["data_type"]:
-                    data_type_count += 1
-                if "union" in entry["data_type"]:
                     data_type_count += 1
                 if data_type_count > 1:
                     self.symtab.error = True
@@ -6448,12 +6203,6 @@ class Parser:
                         if single_type != "struct":
                             p[1].type.append(single_type)
 
-                if "union" in type_list:
-                    p[1].type.append("union")
-                    for single_type in type_list:
-                        if single_type != "union":
-                            p[1].type.append(single_type)
-
                 if isArr > 0:
                     temp_type = []
                     temp_type.append(p[1].type[0])
@@ -6503,23 +6252,23 @@ class Parser:
                     )
                     return
 
-                if "struct" in p[1].type[0] or "union" in p[1].type[0]:
+                if "struct" in p[1].type[0]:
                     p[1].vars = entry["vars"]
 
-                elif "struct *" in p[1].type or "union *" in p[1].type:
+                elif "struct *" in p[1].type:
                     p[1].vars = entry["vars"]
 
-                elif "struct" in p[1].type[0] or "union" in p[1].type[0]:
+                elif "struct" in p[1].type[0]:
                     self.symtab.error = True
                     print(
                         bcolors.FAIL
-                        + "Multilevel pointer for structs/unions not allowed at line "
+                        + "Multilevel pointer for structs not allowed at line "
                         + str(p.lineno(2))
                         + bcolors.ENDC
                     )
 
                 if "struct" in p[1].type and "struct" not in p[3].type:
-                    self.symtab.error = 1
+                    self.symtab.error = True
                     print(
                         bcolors.FAIL
                         + "Cannot assign non-struct value "
@@ -6536,36 +6285,10 @@ class Parser:
                     and "struct" in p[3].type
                     and p[1].type[1] != p[3].type[1]
                 ):
-                    self.symtab.error = 1
+                    self.symtab.error = True
                     print(
                         bcolors.FAIL
                         + "Incompatible struct types at line "
-                        + str(p.lineno(2))
-                        + bcolors.ENDC
-                    )
-
-                elif "union" in p[1].type and "union" not in p[3].type:
-                    self.symtab.error = 1
-                    print(
-                        bcolors.FAIL
-                        + "Cannot assign non-union value "
-                        + str(p[3].type)
-                        + " to union type "
-                        + str(p[1].type)
-                        + " at line "
-                        + str(p.lineno(2))
-                        + bcolors.ENDC
-                    )
-
-                elif (
-                    "union" in p[1].type
-                    and "union" in p[3].type
-                    and p[1].type[1] != p[3].type[1]
-                ):
-                    self.symtab.error = 1
-                    print(
-                        bcolors.FAIL
-                        + "Incompatible union types at line "
                         + str(p.lineno(2))
                         + bcolors.ENDC
                     )
@@ -6576,7 +6299,7 @@ class Parser:
                     and p[1].type[0] in temp_list_aa
                     and p[3].type[0] not in temp_list_aa
                 ):
-                    self.symtab.error = 1
+                    self.symtab.error = True
                     print(
                         bcolors.FAIL
                         + "Type mismatch during assignment at line "
@@ -6589,7 +6312,7 @@ class Parser:
                     and p[1].type[0][-1] != "*"
                     and p[3].type[0] in temp_list_aa
                 ):
-                    self.symtab.error = 1
+                    self.symtab.error = True
                     print(
                         bcolors.FAIL
                         + "Type mismatch during assignment at line "
@@ -6598,7 +6321,7 @@ class Parser:
                     )
 
                 elif "arr" in p[1].type and "init_list" not in p[3].type:
-                    self.symtab.error = 1
+                    self.symtab.error = True
                     print(
                         bcolors.FAIL
                         + "Invalid array initialization at line "
@@ -6613,7 +6336,7 @@ class Parser:
                     and p[3].type[0][-1] != "*"
                     and "str" not in p[3].type
                 ):
-                    self.symtab.error = 1
+                    self.symtab.error = True
                     print(
                         bcolors.FAIL
                         + "Assignment between pointer and "
@@ -6652,8 +6375,6 @@ class Parser:
 
                 if "struct" in p[0].type:
                     p[0].label += "_struct"
-                elif "union" in p[0].type:
-                    p[0].label += "_union"
                 elif (
                     len(p[0].type) > 0
                     and p[0].type[0][-1] == "*"
@@ -6667,7 +6388,7 @@ class Parser:
                 p[0].label = p[0].label.replace(" ", "_")
                 p[0].node.attr["label"] = p[0].label
 
-        if self.symtab.error:
+        if self.symtab.error == True:
             return
 
         for var_name in p[0].variables:
@@ -6681,14 +6402,6 @@ class Parser:
                         found["vars"][var][
                             "temp"
                         ] = f'-{-found["vars"][var]["offset"] + self.symtab.offset}(%ebp)'
-            elif (
-                "union" in p[0].variables[var_name]
-                and "*" not in p[0].variables[var_name]
-            ):
-                found, entry = self.symtab.return_sym_tab_entry(var_name, p.lineno(1))
-                if found and found["variable_scope"] == "Local":
-                    for var in found["vars"]:
-                        found["vars"][var]["temp"] = f"-{self.symtab.offset}(%ebp)"
             found, entry = self.symtab.return_sym_tab_entry(var_name)
             if found["variable_scope"] == "Local":
 
@@ -6706,7 +6419,7 @@ class Parser:
                     )
             p[0].temp = found["temp"]
         if len(p) == 4:
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             if (
                 p[3].totype is not None
@@ -6758,8 +6471,10 @@ class Parser:
             else:
                 p3.temp = p[3].temp
             if self.symtab.is_global():
-                print("Cannot initialize global variables while declaring")
-                self.symtab.error = 1
+                print(
+                    bcolors.FAIL + "Cannot initialize global variables while declaring"
+                )
+                self.symtab.error = True
                 return
             else:
                 self.equate(p[1].type, p[0].label, p[0].temp, p3.temp)
@@ -6771,11 +6486,11 @@ class Parser:
                         [p[1].temp, found["allocated_size"]]
                     )
                     found, entry = self.symtab.return_sym_tab_entry(var_name)
-                    found["temp"] = (
-                        found["temp"] + "." + str(self.three_address_code.staticCounter)
-                    )
-                    self.three_address_code.staticCounter += 1
-                    self.three_address_code.staticSymbols.append(
+                    # found["temp"] = (
+                    #     found["temp"] + "." + str(self.three_address_code.counter_static)
+                    # )
+                    self.three_address_code.counter_static += 1
+                    self.three_address_code.static_variables.append(
                         [found["temp"], None, found["allocated_size"]]
                     )
 
@@ -6787,10 +6502,10 @@ class Parser:
         | FLOAT
         | SIGNED
         | UNSIGNED
-        | struct_or_union_specifier
+        | struct_specifier
         | BOOL
         """
-        if self.error:
+        if self.error == True:
             return
         if str(p[1]) not in [
             "void",
@@ -6811,11 +6526,11 @@ class Parser:
             p[0].type.append(str(p[1]))
             p[0].line = p.lineno(1)
 
-    def p_struct_or_union_specifier(self, p):
-        """struct_or_union_specifier : struct_or_union IDENTIFIER '{' marker_struct_1 struct_declaration_list '}' marker_struct_0
-        | struct_or_union IDENTIFIER
+    def p_struct_specifier(self, p):
+        """struct_specifier : struct IDENTIFIER '{' marker_struct_1 struct_declaration_list '}' marker_struct_0
+        | struct IDENTIFIER
         """
-        if self.error:
+        if self.error == True:
             return
         p[0] = p[1]
         p[0].type += [p[2]["lexeme"]]
@@ -6853,8 +6568,7 @@ class Parser:
             self.symtab.modify_symbol_su(
                 p2val, "allocated_size", struct_size, p.lineno(1), 1
             )
-            strrr = str(p[1].type[0]) + " " + str(p2val)
-            datatype_size[strrr] = struct_size
+            datatype_size[f"{p[1].type[0]} {p2val}"] = struct_size
 
         elif len(p) == 3:
             pval = p[2]["lexeme"]
@@ -6875,7 +6589,7 @@ class Parser:
         """
         marker_struct_0 :
         """
-        if self.error:
+        if self.error == True:
             return
         self.symtab.flag = 0
 
@@ -6883,20 +6597,18 @@ class Parser:
         """
         marker_struct_1 :
         """
-        if self.error:
+        if self.error == True:
             return
-        self.symtab.flag = 1
         identity = p[-2]["lexeme"]
         type_name = p[-3].label.upper()
         line_num = p[-2]["additional"]["line"]
+        self.symtab.flag = 1
         self.symtab.insert_symbol(identity, line_num, type_name)
         self.symtab.flag = 2
 
-    def p_struct_or_union(self, p):
-        """struct_or_union : STRUCT
-        | UNION
-        """
-        if self.error:
+    def p_struct(self, p):
+        """struct : STRUCT"""
+        if self.error == True:
             return
         p[0] = Node(str(p[1]))
         p[0].type = [str(p[1]).lower()]
@@ -6906,7 +6618,7 @@ class Parser:
         """struct_declaration_list : struct_declaration
         | struct_declaration_list struct_declaration
         """
-        if self.error:
+        if self.error == True:
             return
         if len(p) == 2:
             p[0] = p[1]
@@ -6917,9 +6629,9 @@ class Parser:
 
     def p_struct_declaration(self, p):
         """struct_declaration : specifier_qualifier_list struct_declarator_list ';'"""
-        if self.error:
+        if self.error == True:
             return
-        p[0] = Node("struct_union_declaration", [p[1], p[2]])
+        p[0] = Node("struct_declaration", [p[1], p[2]])
         if p[1].type is None:
             p[1].type = []
         temp_list = []
@@ -6965,8 +6677,6 @@ class Parser:
                 count = count + 1
             if "struct" in p[1].type:
                 count = count + 1
-            if "union" in p[1].type:
-                count = count + 1
 
             if count > 1:
                 self.symtab.error = True
@@ -6977,11 +6687,11 @@ class Parser:
                     + bcolors.ENDC,
                 )
 
-        if "union" in p[1].type[0] or "struct" in p[1].type[0]:
+        if "struct" in p[1].type[0]:
             self.symtab.error = True
             print(
                 bcolors.FAIL
-                + "Nested structures/unions at line number "
+                + "Nested structuress at line number "
                 + str(p.lineno(3))
                 + " not supported"
                 + bcolors.ENDC
@@ -6991,7 +6701,7 @@ class Parser:
         """specifier_qualifier_list : type_specifier
         | type_specifier specifier_qualifier_list
         """
-        if self.error:
+        if self.error == True:
             return
         if len(p) == 2:
             p[0] = p[1]
@@ -7008,7 +6718,7 @@ class Parser:
         """struct_declarator_list : struct_declarator
         | struct_declarator_list ',' structDeclaratorMarkerStart struct_declarator
         """
-        if self.error:
+        if self.error == True:
             return
         if len(p) == 2:
             p[0] = p[1]
@@ -7018,14 +6728,14 @@ class Parser:
 
     def p_structDeclaratorMarkerStart(self, p):
         """structDeclaratorMarkerStart :"""
-        if self.error:
+        if self.error == True:
             return
         p[0] = Node("", create_ast=False)
         p[0].extraVals = p[-2].extraVals
 
     def p_struct_declarator(self, p):
         """struct_declarator : declarator"""
-        if self.error:
+        if self.error == True:
             return
         if len(p) == 2:
             p[0] = p[1]
@@ -7074,35 +6784,12 @@ class Parser:
                                 + bcolors.ENDC
                             )
 
-                            self.symtab.error = 1
+                            self.symtab.error = True
                         self.symtab.modify_symbol(
                             name, "allocated_size", hold * struct_size, p.lineno(1)
                         )
                     else:
-                        self.symtab.error = 1
-                elif "union" in p[0].variables[name]:
-                    struct_size = 0
-                    found = self.symtab.return_type_tab_entry_su(
-                        p[0].variables[name][-2], p[0].variables[name][-1], p.lineno(1)
-                    )
-                    if found:
-                        if found and "allocated_size" in found.keys():
-                            struct_size = found["allocated_size"]
-                            for var in found["vars"]:
-                                found["vars"][var]["offset"] = 0
-                        else:
-                            struct_size = 0
-                            print(
-                                bcolors.FAIL
-                                + "Defining object of the same union within itself isn't allowed."
-                                + bcolors.ENDC
-                            )
-                            self.symtab.error = 1
-                        self.symtab.modify_symbol(
-                            name, "allocated_size", hold * struct_size, p.lineno(1)
-                        )
-                    else:
-                        self.symtab.error = 1
+                        self.symtab.error = True
                 elif "float" in p[0].variables[name]:
                     self.symtab.modify_symbol(
                         name,
@@ -7149,7 +6836,7 @@ class Parser:
         """declarator : pointer direct_declarator
         | direct_declarator
         """
-        if self.error:
+        if self.error == True:
             return
         if len(p) == 2:
             p[0] = p[1]
@@ -7164,7 +6851,7 @@ class Parser:
         """function_declarator : pointer direct_declarator
         | direct_declarator
         """
-        if self.error:
+        if self.error == True:
             return
         if len(p) == 2:
             p[0] = p[1]
@@ -7178,7 +6865,7 @@ class Parser:
         | '(' declarator ')'
         | direct_declarator '[' ']'
         """
-        if self.error:
+        if self.error == True:
             return
 
         if len(p) == 2:
@@ -7191,18 +6878,17 @@ class Parser:
                 p[0] = Node("DirectDeclaratorArraySubscript", [p[1]])
                 p[0].variables = p[1].variables
                 p[0].append_dict("[]")
-
                 try:
-                    p[0].arrs = []
+                    p[0].array = p[1].array
                 except:
-                    p[0].arrs = []
-                p[0].arrs.append("empty")
+                    p[0].array = []
+                p[0].array.append("empty")
 
     def p_direct_declarator_2(self, p):
-        """direct_declarator : direct_declarator '[' IntegerConst ']'
+        """direct_declarator : direct_declarator '[' integer_constant ']'
         | direct_declarator '(' marker_function_push ')'
         """
-        if self.error:
+        if self.error == True:
             return
 
         if p[2] == "(":
@@ -7221,14 +6907,14 @@ class Parser:
 
     def p_direct_declarator_3(self, p):
         """direct_declarator : direct_declarator '(' marker_function_push parameter_type_list ')'"""
-        if self.error:
+        if self.error == True:
             return
 
         p[0] = Node("DirectDeclaratorFunctionCall", [p[1], p[4]])
         for variable in p[4].variables:
             if variable == p[1].label:
-                self.symtab.error = 1
-                self.error = 1
+                self.symtab.error = True
+                self.error = True
                 print(
                     bcolors.FAIL
                     + f"Cannot have function parameter with same name as function at line {p.lineno(2)}"
@@ -7239,7 +6925,7 @@ class Parser:
 
     def p_marker_function_push(self, p):
         """marker_function_push :"""
-        if self.error:
+        if self.error == True:
             return
         p[0] = None
         self.symtab.push_scope(self.three_address_code)
@@ -7249,7 +6935,7 @@ class Parser:
         """pointer : '*'
         | '*' pointer
         """
-        if self.error:
+        if self.error == True:
             return
         if len(p) == 2:
             p[0] = Node("POINTER")
@@ -7279,7 +6965,7 @@ class Parser:
 
     def p_parameter_type_list(self, p):
         """parameter_type_list : parameter_list"""
-        if self.error:
+        if self.error == True:
             return
         p[0] = p[1]
 
@@ -7287,7 +6973,7 @@ class Parser:
         """parameter_list : parameter_declaration
         | parameter_list ',' parameter_declaration
         """
-        if self.error:
+        if self.error == True:
             return
         if len(p) == 2:
             p[0] = p[1]
@@ -7297,7 +6983,7 @@ class Parser:
 
     def p_parameter_declaration(self, p):
         """parameter_declaration : declaration_specifiers declarator"""
-        if self.error:
+        if self.error == True:
             return
         p[0] = Node("ParDecl", [p[1], p[2]], create_ast=False)
         p[0].variables = p[2].variables
@@ -7311,7 +6997,7 @@ class Parser:
         """type_name : specifier_qualifier_list
         | specifier_qualifier_list abstract_declarator
         """
-        if self.error:
+        if self.error == True:
             return
 
         if len(p) == 2:
@@ -7333,15 +7019,15 @@ class Parser:
         | direct_abstract_declarator
         | pointer direct_abstract_declarator
         """
-        if self.error:
+        if self.error == True:
             return
 
         if len(p) == 2:
-            p[0] = Node("AbsDecl", [p[1]])
+            p[0] = Node("Abstract Declarator", [p[1]])
             p[0].type = p[1].type
 
         else:
-            p[0] = Node("AbsDecl", [p[1], p[2]])
+            p[0] = Node("Abstract Declarator", [p[1], p[2]])
             p[0].type = p[1].type
             if p[2].type:
                 for single_type in p[2].type:
@@ -7352,21 +7038,22 @@ class Parser:
         | '[' ']'
         | '[' constant_expression ']'
         | direct_abstract_declarator '[' ']'
-        | direct_abstract_declarator '[' IntegerConst ']'
+        | direct_abstract_declarator '[' integer_constant ']'
         | '(' ')'
         | '(' parameter_type_list ')'
         | direct_abstract_declarator '(' ')'
         | direct_abstract_declarator '(' parameter_type_list ')'
         """
-        if self.error:
+        if self.error == True:
             return
+
         if len(p) == 3:
             if p[1] == "(":
                 p[0] = Node("DirectAbstractDeclarator()")
             elif p[1] == "[":
                 p[0] = Node("DirectAbstractDeclarator[]")
 
-        if len(p) == 4:
+        elif len(p) == 4:
             if p[1] == "(":
                 p[0] = Node("DirectAbstractDeclarator()", [p[2]])
             elif p[1] == "[":
@@ -7393,33 +7080,33 @@ class Parser:
                     | iteration_statement
                     | jump_statement
         """
-        if self.error:
+        if self.error == True:
             return
         p[0] = p[1]
 
-    def p_labeled_statement_2(self, p):
+    def p_labeled_statement_1(self, p):
         """
         labeled_statement : marker_case_1 CASE constant_expression marker_case_2 ':' statement
         """
-        if self.error:
+        if self.error == True:
             return
         p[0] = Node("CASE:", [p[3], p[6]])
         p[0].numdef = p[6].numdef
-        if self.symtab.error:
+        if self.symtab.error == True:
             return
         p[0].break_list = p[6].break_list
         p[0].next_list = p[6].next_list
         p[0].test_list.append([p[3].temp, p[1].quadruples, p[4].quadruples])
 
-    def p_labeled_statement_3(self, p):
+    def p_labeled_statement_2(self, p):
         """
         labeled_statement : marker_case_1 DEFAULT ':' statement
         """
-        if self.error:
+        if self.error == True:
             return
         p[0] = Node("DEFAULT:", [p[4]])
         p[0].numdef = 1 + p[4].numdef
-        if self.symtab.error:
+        if self.symtab.error == True:
             return
         p[0].break_list = p[4].break_list
         p[0].next_list = p[4].next_list
@@ -7429,10 +7116,10 @@ class Parser:
         """
         marker_case_1 :
         """
-        if self.error:
+        if self.error == True:
             return
         p[0] = Node("", create_ast=False)
-        if self.symtab.error:
+        if self.symtab.error == True:
             return
         p[0].quadruples = self.three_address_code.next_statement
 
@@ -7440,10 +7127,10 @@ class Parser:
         """
         marker_case_2 :
         """
-        if self.error:
+        if self.error == True:
             return
         p[0] = Node("", create_ast=False)
-        if self.symtab.error:
+        if self.symtab.error == True:
             return
         p[0].quadruples = self.three_address_code.next_statement
 
@@ -7454,13 +7141,15 @@ class Parser:
                             | '{' marker_compound_statement_push declaration_list '}' marker_compound_statement_pop
                             | '{' marker_compound_statement_push declaration_list marker_global statement_list '}' marker_compound_statement_pop
         """
-        if self.error:
+        if self.error == True:
             return
+
         if len(p) == 5:
-            p[0] = Node("EmptySCOPE", create_ast=False)
+            p[0] = Node("Empty SCOPE", create_ast=False)
+
         elif len(p) == 6:
             p[0] = Node("SCOPE", [p[3]])
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             p[0].numdef = p[3].numdef
             p[0].true_list = p[3].true_list
@@ -7469,9 +7158,10 @@ class Parser:
             p[0].continuelist = p[3].continuelist
             p[0].next_list = p[3].next_list
             p[0].test_list = p[3].test_list
+
         elif len(p) == 8:
             p[0] = Node(";", [p[3], p[5]])
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             if p[3] is not None and p[5] is not None:
                 p[0].numdef = p[3].numdef + p[5].numdef
@@ -7492,8 +7182,9 @@ class Parser:
         statement_list  : statement
                         | statement_list marker_global statement
         """
-        if self.error:
+        if self.error == True:
             return
+
         if len(p) == 2:
             p[0] = p[1]
             if p[1] is not None:
@@ -7505,9 +7196,10 @@ class Parser:
                 p[0].continuelist = p[1].continuelist
                 p[0].next_list = p[1].next_list
                 p[0].test_list = p[1].test_list
+
         elif len(p) == 4:
             p[0] = Node(";", [p[1], p[3]])
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             if p[1] is not None and p[3] is not None:
                 p[0].numdef = p[1].numdef + p[3].numdef
@@ -7527,8 +7219,9 @@ class Parser:
         declaration_list    : declaration
                             | declaration_list marker_global declaration
         """
-        if self.error:
+        if self.error == True:
             return
+
         if len(p) == 2:
             p[0] = p[1]
             if p[1] is not None:
@@ -7540,9 +7233,10 @@ class Parser:
                 p[0].continuelist = p[1].continuelist
                 p[0].next_list = p[1].next_list
                 p[0].test_list = p[1].test_list
+
         elif len(p) == 4:
             p[0] = Node(";", [p[1], p[3]])
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             if p[1] is not None and p[3] is not None:
                 p[0].numdef = p[1].numdef + p[3].numdef
@@ -7561,7 +7255,7 @@ class Parser:
         """
         marker_compound_statement_push :
         """
-        if self.error:
+        if self.error == True:
             return
         self.symtab.push_scope(self.three_address_code)
 
@@ -7569,7 +7263,7 @@ class Parser:
         """
         marker_compound_statement_pop :
         """
-        if self.error:
+        if self.error == True:
             return
         self.symtab.pop_scope(self.three_address_code)
 
@@ -7578,8 +7272,9 @@ class Parser:
         block_item_list : block_item
                         | block_item_list marker_global block_item
         """
-        if self.error:
+        if self.error == True:
             return
+
         if len(p) == 2:
             p[0] = Node(";", [p[1]])
             if p[1] is not None:
@@ -7594,7 +7289,7 @@ class Parser:
 
         elif len(p) == 4:
             p[0] = Node(";", [p[1], p[3]])
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             if p[1] is not None and p[3] is not None:
                 p[0].numdef = p[1].numdef + p[3].numdef
@@ -7614,15 +7309,17 @@ class Parser:
         block_item : declaration
                     | statement
         """
-        if self.error:
+        if self.error == True:
             return
+
+        p[0] = p[1]
 
     def p_expression_statement(self, p):
         """
         expression_statement    : ';'
                                 | expression ';'
         """
-        if self.error:
+        if self.error == True:
             return
         if len(p) == 2:
             p[0] = Node("EmptyExprStmt")
@@ -7635,19 +7332,19 @@ class Parser:
                             | IF '(' expression ')' marker_global statement marker_global_2 ELSE marker_global statement
                             | SWITCH '(' expression ')' marker_switch statement
         """
-        if self.error:
+        if self.error == True:
             return
 
             return
         if len(p) == 7:
             p[0] = Node(str(p[1]).upper(), [p[3], p[6]])
             if p[6].numdef > 1:
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + f"Cannot have multiple default labels in a single switch statement at line {p.lineno(1)}"
                 )
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             p[0].next_list = p[6].break_list + p[6].next_list
             p[0].next_list.append(self.three_address_code.next_statement)
@@ -7699,7 +7396,7 @@ class Parser:
                     self.three_address_code.backpatch(tmplist, item[1])
         elif len(p) == 8:
             p[0] = Node("IF-ELSE", [p[3], p[6]])
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             self.three_address_code.backpatch(p[3].true_list, p[5].quadruples)
             p[0].next_list = p[3].false_list + p[6].next_list
@@ -7708,7 +7405,7 @@ class Parser:
             p[0].test_list = p[6].test_list
         else:
             p[0] = Node("IF-ELSE", [p[3], p[6], p[10]])
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             self.three_address_code.backpatch(p[3].true_list, p[5].quadruples)
             self.three_address_code.backpatch(p[3].false_list, p[9].quadruples)
@@ -7721,22 +7418,10 @@ class Parser:
         """
         marker_switch :
         """
-        if self.error:
+        if self.error == True:
             return
         p[0] = Node("", create_ast=False)
-        if self.symtab.error:
-            return
-        p[0].next_list.append(self.three_address_code.next_statement)
-        self.three_address_code.emit("goto", "", "", "")
-
-    def p_marker_global_2(self, p):
-        """
-        marker_global_2 :
-        """
-        if self.error:
-            return
-        p[0] = Node("", create_ast=False)
-        if self.symtab.error:
+        if self.symtab.error == True:
             return
         p[0].next_list.append(self.three_address_code.next_statement)
         self.three_address_code.emit("goto", "", "", "")
@@ -7745,12 +7430,24 @@ class Parser:
         """
         marker_global :
         """
-        if self.error:
+        if self.error == True:
             return
         p[0] = Node("", create_ast=False)
-        if self.symtab.error:
+        if self.symtab.error == True:
             return
         p[0].quadruples = self.three_address_code.next_statement
+
+    def p_marker_global_2(self, p):
+        """
+        marker_global_2 :
+        """
+        if self.error == True:
+            return
+        p[0] = Node("", create_ast=False)
+        if self.symtab.error == True:
+            return
+        p[0].next_list.append(self.three_address_code.next_statement)
+        self.three_address_code.emit("goto", "", "", "")
 
     def p_iteration_statement_1(self, p):
         """
@@ -7763,7 +7460,7 @@ class Parser:
 
         if len(p) == 8:
             p[0] = Node("WHILE", [p[4], p[6]])
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             self.three_address_code.backpatch(p[7].next_list, p[2].quadruples)
             self.three_address_code.backpatch(p[7].continuelist, p[2].quadruples)
@@ -7773,7 +7470,7 @@ class Parser:
 
         elif len(p) == 10:
             p[0] = Node("DO-WHILE", [p[3], p[7]])
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             self.three_address_code.backpatch(p[7].true_list, p[2].quadruples)
             p[0].next_list = p[7].false_list + p[3].break_list
@@ -7793,7 +7490,7 @@ class Parser:
         if len(p) == 9:
             p[0] = Node("FOR", [p[3], p[5], p[8]])
 
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             self.three_address_code.backpatch(p[8].next_list, p[4].quadruples)
             self.three_address_code.backpatch(p[8].continuelist, p[4].quadruples)
@@ -7805,7 +7502,7 @@ class Parser:
 
         elif len(p) == 11:
             p[0] = Node("FOR", [p[3], p[5], p[7], p[10]])
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             self.three_address_code.backpatch(p[3].true_list, p[4].quadruples)
             self.three_address_code.backpatch(p[3].false_list, p[4].quadruples)
@@ -7822,11 +7519,11 @@ class Parser:
         | FOR '(' push_marker_loops declaration marker_global expression_statement marker_global expression ')' marker_global statement pop_marker_loops
         """
 
-        if self.error:
+        if self.error == True:
             return
         if len(p) == 11:
             p[0] = Node("FOR", [p[4], p[6], p[9]])
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             self.three_address_code.backpatch(p[6].true_list, p[8].quadruples)
             self.three_address_code.backpatch(p[9].continuelist, p[5].quadruples)
@@ -7835,7 +7532,7 @@ class Parser:
             self.three_address_code.emit("goto", p[5].quadruples + 1, "", "")
         else:
             p[0] = Node("FOR", [p[4], p[6], p[8], p[11]])
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             self.three_address_code.backpatch(p[11].next_list, p[7].quadruples)
             self.three_address_code.backpatch(p[11].continuelist, p[7].quadruples)
@@ -7849,7 +7546,7 @@ class Parser:
         """
         push_marker_loops :
         """
-        if True == self.error:
+        if self.error == True:
             return
         else:
             self.symtab.push_scope(self.three_address_code)
@@ -7861,7 +7558,7 @@ class Parser:
         if True == self.error:
             return
         else:
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             self.symtab.pop_scope(self.three_address_code, 1)
 
@@ -7872,12 +7569,12 @@ class Parser:
                         | RETURN ';'
                         | RETURN expression ';'
         """
-        if self.error:
+        if self.error == True:
             return
 
         if len(p) == 3:
             p[0] = Node(str(p[1]).upper())
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             if p[1] == "continue":
                 p[0].continuelist.append(self.three_address_code.next_statement)
@@ -7899,14 +7596,14 @@ class Parser:
                         + str(p.lineno(1))
                         + bcolors.ENDC
                     )
-                if self.symtab.error:
+                if self.symtab.error == True:
                     return
                 self.three_address_code.emit("retq", "", "", "")
         else:
             p[0] = Node("RETURN")
             found = list(self.symtab.table[0])
             if not "data_type" in self.symtab.table[0][found[-1]].keys():
-                self.symtab.error = 1
+                self.symtab.error = True
                 return
             functype = self.symtab.table[0][found[-1]]["data_type"]
             if functype is None:
@@ -7964,7 +7661,7 @@ class Parser:
                     + bcolors.ENDC
                 )
 
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             isarr = 0
             type_list = functype
@@ -8021,11 +7718,6 @@ class Parser:
                 for single_type in type_list:
                     if single_type != "struct":
                         p[0].type.append(single_type)
-            if "union" in type_list:
-                p[0].type.append("union")
-                for single_type in type_list:
-                    if single_type != "union":
-                        p[0].type.append(single_type)
             if isarr > 0:
                 temp_type = []
                 temp_type.append(p[0].type[0])
@@ -8058,13 +7750,11 @@ class Parser:
                     else:
                         temp_type.append(p[0].type[i])
                 p[0].type = temp_type
-            if ("struct" in p[0].type or "union" in p[0].type) and p[0].type != p[
-                2
-            ].type:
-                self.symtab.error = 1
+            if ("struct" in p[0].type) and p[0].type != p[2].type:
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
-                    + "Need struct/union of type"
+                    + "Need struct of type"
                     + str(p[0].type)
                     + ", instead got return type "
                     + str(p[2].type)
@@ -8091,7 +7781,7 @@ class Parser:
             else:
                 p2 = p[2]
             p[0].insert_edge([p2])
-            if self.symtab.error:
+            if self.symtab.error == True:
                 return
             if p[2].totype is not None and p[2].totype != p[2].type:
                 p2.temp = self.three_address_code.create_temp_var()
@@ -8148,7 +7838,7 @@ class Parser:
         """translation_unit : translation_unit external_declaration
         | external_declaration
         """
-        if self.error:
+        if self.error == True:
             return
 
         p[0] = self.ast_root
@@ -8163,7 +7853,7 @@ class Parser:
         """external_declaration : function_definition
         | declaration
         """
-        if self.error:
+        if self.error == True:
             return
         p[0] = p[1]
 
@@ -8171,7 +7861,7 @@ class Parser:
         """function_definition :  declaration_specifiers function_declarator '{' marker_function_start '}' marker_function_end
         | declaration_specifiers function_declarator '{' marker_function_start block_item_list '}' marker_function_end
         """
-        if self.error:
+        if self.error == True:
             return
         line = 0
         if len(p) == 7:
@@ -8232,8 +7922,6 @@ class Parser:
                 cnt = cnt + 1
             if "struct" in p[1].type:
                 cnt = cnt + 1
-            if "union" in p[1].type:
-                cnt = cnt + 1
 
             if cnt > 1:
                 self.symtab.error = True
@@ -8244,7 +7932,7 @@ class Parser:
                     + bcolors.ENDC
                 )
 
-        if self.symtab.error:
+        if self.symtab.error == True:
             return
 
         for i in p[2].variables:
@@ -8273,7 +7961,7 @@ class Parser:
                             + bcolors.ENDC
                         )
 
-        if self.symtab.error:
+        if self.symtab.error == True:
             return
 
         for key in p[2].variables.keys():
@@ -8281,7 +7969,7 @@ class Parser:
                 function_name = key
                 break
 
-        if self.symtab.error:
+        if self.symtab.error == True:
             return
 
         func, entry = self.symtab.return_sym_tab_entry(function_name)
@@ -8292,15 +7980,14 @@ class Parser:
         else:
             self.three_address_code.emit("retq", "$0", "", "")
         self.three_address_code.emit("", "", "", "")
-
         for var in entry["scope"][0]:
-            if var == "struct_or_union":
+            if var == "struct":
                 continue
             if var == "scope":
                 continue
             if var == "scope_num":
                 continue
-            if var[0] == "!":
+            if var[0] == "$":
                 continue
             param = entry["scope"][0][var]
 
@@ -8317,7 +8004,7 @@ class Parser:
 
                 if single_type[0] == "[" and single_type[-1] == "]":
                     if single_type[1:-1] == "" and ctrpar != 0:
-                        self.symtab.error = 1
+                        self.symtab.error = True
                         print(
                             bcolors.FAIL
                             + "Cannot have empty indices for array declarations at line "
@@ -8326,7 +8013,7 @@ class Parser:
                         )
                         return
                     elif single_type[1:-1] != "" and int(single_type[1:-1]) <= 0:
-                        self.symtab.error = 1
+                        self.symtab.error = True
                         print(
                             bcolors.FAIL
                             + "Cannot have non-positive integers for array declarations at line "
@@ -8335,8 +8022,10 @@ class Parser:
                         )
                         return
 
+            if len(temp2_type_list) >= 2 and temp2_type_list[1] == "unsigned":
+                temp2_type_list = temp2_type_list[:2]
             if len(temp2_type_list) != len(set(temp2_type_list)):
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "variables cannot have duplicating type of declarations at line",
@@ -8345,7 +8034,7 @@ class Parser:
                 return
 
             if "unsigned" in param["data_type"] and "signed" in param["data_type"]:
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL
                     + "variable cannot be both signed and unsigned at line",
@@ -8353,7 +8042,7 @@ class Parser:
                 )
                 return
             elif "void" in param["data_type"] and "*" not in param["data_type"]:
-                self.symtab.error = 1
+                self.symtab.error = True
                 print(
                     bcolors.FAIL + "Cannot have a void type variable at line ",
                     param["line"],
@@ -8378,10 +8067,8 @@ class Parser:
                     data_type_count += 1
                 if "struct" in param["data_type"]:
                     data_type_count += 1
-                if "union" in param["data_type"]:
-                    data_type_count += 1
                 if data_type_count > 1:
-                    self.symtab.error = 1
+                    self.symtab.error = True
                     print(
                         bcolors.FAIL
                         + "Two or more conflicting data types specified for variable at line "
@@ -8392,7 +8079,7 @@ class Parser:
 
     def p_marker_function_start(self, p):
         """marker_function_start :"""
-        if self.error:
+        if self.error == True:
             return
         p[0] = Node("", create_ast=False)
         p[0].variables = p[-2].variables
@@ -8421,7 +8108,6 @@ class Parser:
 
                 if p[0].variables[var_name] and (
                     p[0].variables[var_name][-1] == "struct"
-                    or p[0].variables[var_name][-1] == "union"
                 ):
                     found = self.symtab.return_type_tab_entry_su(
                         p[0].variables[var_name][-2],
@@ -8467,7 +8153,6 @@ class Parser:
                     szstr = "allocated_size"
                     vct = [
                         "struct",
-                        "union",
                         "float",
                         "short",
                         "int",
@@ -8493,22 +8178,6 @@ class Parser:
                                     )
                                     if found:
                                         struct_size = found[szstr]
-                                    self.symtab.modify_symbol(
-                                        var_name, szstr, prod * struct_size, p.lineno(0)
-                                    )
-
-                            elif vc == "union":
-                                if vc in p[0].variables[var_name]:
-                                    struct_size = 0
-                                    found, tmp = self.symtab.return_type_tab_entry_su(
-                                        p[0].variables[var_name][-2],
-                                        p[0].variables[var_name][-1],
-                                        p.lineno(0),
-                                    )
-                                    if found:
-                                        struct_size = found[szstr]
-                                        for var in found["vars"]:
-                                            found["vars"][var]["offset"] = 0
                                     self.symtab.modify_symbol(
                                         var_name, szstr, prod * struct_size, p.lineno(0)
                                     )
@@ -8542,14 +8211,7 @@ class Parser:
                             found["vars"][var][
                                 "temp"
                             ] = f'{found["vars"][var]["offset"] + self.symtab.offset}(%ebp)'
-                elif (
-                    "union" in p[0].variables[var_name]
-                    and "*" not in p[0].variables[var_name]
-                ):
-                    found, entry = self.symtab.return_sym_tab_entry(var_name)
-                    if found:
-                        for var in found["vars"]:
-                            found["vars"][var]["temp"] = f"{self.symtab.offset}(%ebp)"
+
                 found, entry = self.symtab.return_sym_tab_entry(var_name)
                 alignedSz = self.symtab.top_scope[var_name][szstr]
                 self.symtab.offset += alignedSz
@@ -8567,23 +8229,214 @@ class Parser:
 
         self.symtab.modify_symbol(function_name, "num_parameters", param_nums)
         self.symtab.offset = 0
-        if self.symtab.error:
+        if self.symtab.error == True:
             return
 
         self.three_address_code.emit(str(function_name) + ":", "", "", "")
 
     def p_marker_function_end(self, p):
         """marker_function_end :"""
-        if self.error:
+        if self.error == True:
             return
         self.symtab.pop_scope(self.three_address_code)
         p[0] = Node("", create_ast=False)
-        if self.symtab.error:
+        if self.symtab.error == True:
             return
         p[0].quadruples = self.three_address_code.next_statement
 
+    def p_push_lib_functions(self, p):
+        """
+        push_lib_functions :
+        """
+        if self.error == True:
+            return
+        # printf with 2 arguments (string, placeholder value)
+        self.symtab.insert_symbol("printf", -1)
+        self.symtab.modify_symbol("printf", "identifier_type", "function")
+        self.symtab.modify_symbol("printf", "data_type", ["void"])
+        self.symtab.modify_symbol("printf", "num_parameters", 2)
+
+        # scanf with 2 arguments (string, placeholder value)
+        self.symtab.insert_symbol("scanf", -1)
+        self.symtab.modify_symbol("scanf", "identifier_type", "function")
+        self.symtab.modify_symbol("scanf", "data_type", ["void"])
+        self.symtab.modify_symbol("scanf", "num_parameters", 2)
+
+        # abs with a single argument
+        self.symtab.insert_symbol("abs", -1)
+        self.symtab.modify_symbol("abs", "identifier_type", "function")
+        self.symtab.modify_symbol("abs", "data_type", ["int"])
+        self.symtab.modify_symbol("abs", "num_parameters", 1)
+
+        # sqrt with a single argument
+        self.symtab.insert_symbol("sqrt", -1)
+        self.symtab.modify_symbol("sqrt", "identifier_type", "function")
+        self.symtab.modify_symbol("sqrt", "data_type", ["float"])
+        self.symtab.modify_symbol("sqrt", "num_parameters", 1)
+
+        # ceil with a single argument
+        self.symtab.insert_symbol("ceil", -1)
+        self.symtab.modify_symbol("ceil", "identifier_type", "function")
+        self.symtab.modify_symbol("ceil", "data_type", ["float"])
+        self.symtab.modify_symbol("ceil", "num_parameters", 1)
+
+        # floor with a single argument
+        self.symtab.insert_symbol("floor", -1)
+        self.symtab.modify_symbol("floor", "identifier_type", "function")
+        self.symtab.modify_symbol("floor", "data_type", ["float"])
+        self.symtab.modify_symbol("floor", "num_parameters", 1)
+
+        # pow with  2 arguments
+        self.symtab.insert_symbol("pow", -1)
+        self.symtab.modify_symbol("pow", "identifier_type", "function")
+        self.symtab.modify_symbol("pow", "data_type", ["float"])
+        self.symtab.modify_symbol("pow", "num_parameters", 2)
+
+        # fabs with a single argument
+        self.symtab.insert_symbol("fabs", -1)
+        self.symtab.modify_symbol("fabs", "identifier_type", "function")
+        self.symtab.modify_symbol("fabs", "data_type", ["float"])
+        self.symtab.modify_symbol("fabs", "num_parameters", 1)
+
+        # log with a single argument
+        self.symtab.insert_symbol("log", -1)
+        self.symtab.modify_symbol("log", "identifier_type", "function")
+        self.symtab.modify_symbol("log", "data_type", ["float"])
+        self.symtab.modify_symbol("log", "num_parameters", 1)
+
+        # log10 with a single argument
+        self.symtab.insert_symbol("log10", -1)
+        self.symtab.modify_symbol("log10", "identifier_type", "function")
+        self.symtab.modify_symbol("log10", "data_type", ["float"])
+        self.symtab.modify_symbol("log10", "num_parameters", 1)
+
+        # fmod with  2 arguments
+        self.symtab.insert_symbol("fmod", -1)
+        self.symtab.modify_symbol("fmod", "identifier_type", "function")
+        self.symtab.modify_symbol("fmod", "data_type", ["float"])
+        self.symtab.modify_symbol("fmod", "num_parameters", 2)
+
+        # exp with a single argument
+        self.symtab.insert_symbol("exp", -1)
+        self.symtab.modify_symbol("exp", "identifier_type", "function")
+        self.symtab.modify_symbol("exp", "data_type", ["float"])
+        self.symtab.modify_symbol("exp", "num_parameters", 1)
+
+        # cos with a single argument
+        self.symtab.insert_symbol("cos", -1)
+        self.symtab.modify_symbol("cos", "identifier_type", "function")
+        self.symtab.modify_symbol("cos", "data_type", ["float"])
+        self.symtab.modify_symbol("cos", "num_parameters", 1)
+
+        # sin with a single argument
+        self.symtab.insert_symbol("sin", -1)
+        self.symtab.modify_symbol("sin", "identifier_type", "function")
+        self.symtab.modify_symbol("sin", "data_type", ["float"])
+        self.symtab.modify_symbol("sin", "num_parameters", 1)
+
+        # acos with a single argument
+        self.symtab.insert_symbol("acos", -1)
+        self.symtab.modify_symbol("acos", "identifier_type", "function")
+        self.symtab.modify_symbol("acos", "data_type", ["float"])
+        self.symtab.modify_symbol("acos", "num_parameters", 1)
+
+        # asin with a single argument
+        self.symtab.insert_symbol("asin", -1)
+        self.symtab.modify_symbol("asin", "identifier_type", "function")
+        self.symtab.modify_symbol("asin", "data_type", ["float"])
+        self.symtab.modify_symbol("asin", "num_parameters", 1)
+
+        # tan with a single argument
+        self.symtab.insert_symbol("tan", -1)
+        self.symtab.modify_symbol("tan", "identifier_type", "function")
+        self.symtab.modify_symbol("tan", "data_type", ["float"])
+        self.symtab.modify_symbol("tan", "num_parameters", 1)
+
+        # atan with a single argument
+        self.symtab.insert_symbol("atan", -1)
+        self.symtab.modify_symbol("atan", "identifier_type", "function")
+        self.symtab.modify_symbol("atan", "data_type", ["float"])
+        self.symtab.modify_symbol("atan", "num_parameters", 1)
+
+        # strlen with a single argument
+        self.symtab.insert_symbol("strlen", -1)
+        self.symtab.modify_symbol("strlen", "identifier_type", "function")
+        self.symtab.modify_symbol("strlen", "data_type", ["int"])
+        self.symtab.modify_symbol("strlen", "num_parameters", 1)
+
+        # strlwr with a single argument
+        self.symtab.insert_symbol("strlwr", -1)
+        self.symtab.modify_symbol("strlwr", "identifier_type", "function")
+        self.symtab.modify_symbol("strlwr", "data_type", ["char", "*"])
+        self.symtab.modify_symbol("strlwr", "num_parameters", 1)
+
+        # strupr with a single argument
+        self.symtab.insert_symbol("strupr", -1)
+        self.symtab.modify_symbol("strupr", "identifier_type", "function")
+        self.symtab.modify_symbol("strupr", "data_type", ["char", "*"])
+        self.symtab.modify_symbol("strupr", "num_parameters", 1)
+
+        # strcpy with a single argument
+        self.symtab.insert_symbol("strcpy", -1)
+        self.symtab.modify_symbol("strcpy", "identifier_type", "function")
+        self.symtab.modify_symbol("strcpy", "data_type", ["char", "*"])
+        self.symtab.modify_symbol("strcpy", "num_parameters", 2)
+
+        # strcat with a single argument
+        self.symtab.insert_symbol("strcat", -1)
+        self.symtab.modify_symbol("strcat", "identifier_type", "function")
+        self.symtab.modify_symbol("strcat", "data_type", ["char", "*"])
+        self.symtab.modify_symbol("strcat", "num_parameters", 2)
+
+        # strcmp with a single argument
+        self.symtab.insert_symbol("strcmp", -1)
+        self.symtab.modify_symbol("strcmp", "identifier_type", "function")
+        self.symtab.modify_symbol("strcmp", "data_type", ["int"])
+        self.symtab.modify_symbol("strcmp", "num_parameters", 2)
+
+        self.symtab.insert_symbol("strrev", -1)
+        self.symtab.modify_symbol("strrev", "identifier_type", "function")
+        self.symtab.modify_symbol("strrev", "data_type", ["char", "*"])
+        self.symtab.modify_symbol("strrev", "num_parameters", 1)
+
+        # malloc with 1 arguments
+        self.symtab.insert_symbol("malloc", -1)
+        self.symtab.modify_symbol("malloc", "identifier_type", "function")
+        self.symtab.modify_symbol("malloc", "data_type", ["void", "*"])
+        self.symtab.modify_symbol("malloc", "num_parameters", 1)
+
+        # calloc with 1 arguments
+        self.symtab.insert_symbol("calloc", -1)
+        self.symtab.modify_symbol("calloc", "identifier_type", "function")
+        self.symtab.modify_symbol("calloc", "data_type", ["void", "*"])
+        self.symtab.modify_symbol("calloc", "num_parameters", 2)
+
+        # realloc with 1 arguments
+        self.symtab.insert_symbol("realloc", -1)
+        self.symtab.modify_symbol("realloc", "identifier_type", "function")
+        self.symtab.modify_symbol("realloc", "data_type", ["void", "*"])
+        self.symtab.modify_symbol("realloc", "num_parameters", 2)
+
+        # free with 1 arguments
+        self.symtab.insert_symbol("free", -1)
+        self.symtab.modify_symbol("free", "identifier_type", "function")
+        self.symtab.modify_symbol("free", "data_type", ["void"])
+        self.symtab.modify_symbol("free", "num_parameters", 1)
+
     def printTree(self):
         self.ast_root.print_val()
+
+
+def new_node(G=None, node_num=None, edge=None):
+    global num_nodes
+    num_nodes = num_nodes + 1
+    graph.add_node(num_nodes - 1)
+    node = graph.get_node(num_nodes - 1)
+    return node
+
+
+def remove_node(node, node_num=None):
+    graph.remove_node(node)
 
 
 aparser = argparse.ArgumentParser()
@@ -8591,7 +8444,7 @@ aparser.add_argument(
     "-d", "--debug", action="store_true", help="Parser Debug Mode", default=False
 )
 aparser.add_argument(
-    "-o", "--out", help="Store output of parser in a file", default="./symtab.csv"
+    "-o", "--out", help="Store output of parser in a file", default=None
 )
 aparser.add_argument("infile", help="Input File")
 args = aparser.parse_args()
@@ -8610,9 +8463,8 @@ parser = Parser()
 parser.build()
 result = parser.parser.parse(inp, lexer=lex.lexer)
 
-fdir = "/".join(args.out.split("/")[:-1])
-fname = args.out.split("/")[-1].split(".")[0]
-outputFile = "dot/" + fname + ".dot"
+fname = args.infile.split("/")[-1].split(".")[0]
+ast = "dot/" + fname + ".dot"
 
 if parser.error:
     print(
@@ -8627,12 +8479,17 @@ elif parser.symtab.error:
     print(bcolors.FAIL + "Error in semantic analysis." + bcolors.ENDC)
     sys.exit(0)
 else:
-    symtab_csv = open(fdir + "/" + fname + ".csv", "w")
-    print("Output Symbol Table CSV is: " + fname + ".csv")
-    graph.write(outputFile)
+    # print("Output Symbol Table CSV is at out/symtab/" + fname + ".csv")
+    # print("Output AST is at dot/" + fname + ".dot")
+    # print("Output TAC is at out/tac/" + fname + ".txt")
+
+    symtab_csv = open("out/symtab/" + fname + ".csv", "w")
+    graph.write(ast)
     orig_stdout = sys.stdout
     sys.stdout = symtab_csv
     parser.symtab.print_table()
-    sys.stdout = orig_stdout
-    parser.three_address_code.add_strings()
+    symtab_csv.close()
+    tac = open("out/tac/" + fname + ".txt", "w")
+    sys.stdout = tac
     parser.three_address_code.print_code()
+    tac.close()

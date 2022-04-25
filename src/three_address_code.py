@@ -1,31 +1,41 @@
+###############
+# Delete all coments
+###############
+
+
 import copy
 
 
 class three_address_code:
     def __init__(self):
-        self.code = []
+        self.code = []  # yaha bas statement seq upar neeche kari
+        self.float_values = []
+        self.string_list = []
+        self.global_variables = []
+        self.static_variables = []
+        self.scope_list = {}
         self.counter_temp = 0
         self.counter_label = 0
+        self.counter_static = 1
         self.next_statement = 0
-        self.string_list = []
-        self.float_values = []
-        self.scope_list = {}
         self.counter_scope = 0
-        self.global_variables = []
 
     def create_label(self):
-        self.counter_label += 1
+        self.counter_label = self.counter_label + 1
         label_name = "label_" + str(self.counter_label)
 
     def create_temp_var(self):
         self.counter_temp += 1
-        temp_name = "temp_var_" + str(self.counter_temp)
+        temp_name = "$temp_var_" + str(self.counter_temp)
         return temp_name
 
-    def backpatch(self, p_list, lno):
+    def backpatch(self, p_list, lno):  # changes here, added 3 variables
+        updated_lno = lno + 1
         for i in p_list:
-            if "goto" in self.code[i][0].split():
-                self.code[i][1] = lno + 1
+            compare_str = "goto"
+            to_check_list = self.code[i][0].split()
+            if compare_str in to_check_list:
+                self.code[i][1] = updated_lno
 
     def emit(self, operator, destination, operand_1=None, operand_2=None):
         if (operand_1 is None) and (operand_2 is None):
@@ -34,82 +44,95 @@ class three_address_code:
             self.code.append([operator, destination, operand_1])
         else:
             self.code.append([operator, destination, operand_1, operand_2])
-        self.next_statement += 1
+        self.next_statement = self.next_statement + 1
 
     def find_symbol_in_symtab(self, symtab, identifier):
-        if identifier is None:
-            return None
-        else:
+        if identifier is not None:
             found, entry = symtab.return_sym_tab_entry(identifier)
-            if "temp" in found.keys():
+            compare_str = "temp"  # replaced string and list with vars
+            to_check_list = found.keys()
+            if compare_str in to_check_list:
                 return found["temp"]
             else:
                 new_temp = self.create_temp_var()
-                symtab.modify_symbol(identifier, "temp", new_temp)
+                symtab.modify_symbol(identifier, compare_str, new_temp)  # here too
                 return new_temp
+        return None  # if-else, order changed and else removed
 
     def print_code(self):
-        temp_code = copy.deepcopy(self.code)
-        lines_dict = dict()
-        self.code = []
-        deleted = 0
-        for i in range(0, len(temp_code)):
-            code = temp_code[i]
-            lines_dict[i + 1] = i + 1 - deleted
-            if "goto" in code[0].split():
-                if code[1] == "" or code[1] == None:
-                    deleted += 1
-                else:
-                    self.code.append(code)
-            elif "retq" in code[0].split() and (
-                "retq" in temp_code[i - 1][0].split()
-                or "retq_struct" in temp_code[i - 1][0].split()
-            ):
-                deleted += 1
-            else:
-                self.code.append(code)
 
-        for i in range(0, len(self.code)):
-            code = self.code[i]
-            if "goto" in code[0].split():
-                self.code[i][1] = lines_dict[self.code[i][1]]
-
-        for i in range(0, len(self.code)):
-            code = self.code[i]
-            if (
-                i != 0
-                and len(code[0]) > 0
-                and code[0][0] != "."
-                and code[0][-1] == ":"
-                and "." not in code[0]
-            ):
-                for j in reversed(range(i)):
-                    prev_code = self.code[j]
-                    if len(prev_code[0]) <= 0:
-                        break
-                    elif prev_code[0] == "UNARY&":
-                        self.code[j] = code
-                        self.code[j + 1] = prev_code
-                        break
-                    else:
-                        self.code[j] = code
-                        self.code[j + 1] = prev_code
-        for i in range(0, len(self.code)):
-            code = self.code[i]
-            for i in range(0, len(code)):
-                print(code[i], end=" ")
-            print("")
-
-    def add_strings(self):
         for i in range(0, len(self.string_list)):
             self.emit(f".LC{i}:", "", "", "")
             self.emit(".string", self.string_list[i])
         for i in range(0, len(self.float_values)):
             self.emit(f".LF{i}:", "", "", "")
             self.emit(".long", self.float_values[i])
-        self.add_global()
-
-    def add_global(self):
         for val in self.global_variables:
             self.emit(f".comm", "", str(val[0]) + "," + str(val[1]), "")
         self.emit(".data", "", "", "")
+
+        deleted = 0  # changed ordering
+        lines_dict = dict()
+        temp_code = copy.deepcopy(self.code)
+        check_ran = range(0, len(temp_code))  # added extra var
+        self.code = []
+        for i in check_ran:
+            code = temp_code[i]
+            lines_dict[i + 1] = i - deleted + 1
+            compare_str = "goto"  # replaced string and list with vars
+            compare_str_2 = "retq"
+            to_check_list = code[0].split()
+            to_check_list_2 = temp_code[i - 1][0].split()
+            if compare_str in to_check_list:
+                if code[1] == "" or code[1] == None:
+                    deleted = deleted + 1
+                else:
+                    self.code.append(code)  #### kaafi changes here
+            elif compare_str_2 in to_check_list and (
+                compare_str_2 in to_check_list_2 or "retq_struct" in to_check_list_2
+            ):
+                deleted = deleted + 1
+            else:
+                self.code.append(code)
+        check_ran = range(0, len(self.code))
+        for i in check_ran:
+            code = self.code[i]
+            compare_str = "goto"
+            if compare_str in code[0].split():  # changess
+                spec_elem = self.code[i][1]
+                self.code[i][1] = lines_dict[spec_elem]
+        check_ran = range(0, len(self.code))
+        for i in check_ran:
+            code = self.code[i]
+            code_lvl = code[0]
+            if len(code_lvl) > 0:
+                el0 = code_lvl[0]
+                el1 = code_lvl[-1]
+            if (
+                i != 0
+                and len(code_lvl) > 0
+                and el0 != "."
+                and el1 == ":"
+                and "." not in code_lvl
+            ):
+                check_ran = reversed(range(i))
+                for j in check_ran:
+                    prev_code = self.code[j]  # many changess variables added
+                    check_code = "UNARY&"
+                    if len(prev_code[0]) <= 0:
+                        break
+                    elif prev_code[0] == check_code:
+                        self.code[j + 1] = prev_code  # changed sequence
+                        self.code[j] = code
+                        break
+                    else:
+                        self.code[j + 1] = prev_code  # changed sequence
+                        self.code[j] = code
+        check_ran = range(0, len(self.code))
+        for i in check_ran:
+            print(i + 1, end=" ")
+            code = self.code[i]
+            check_ran2 = range(0, len(code))
+            for j in check_ran2:
+                print(code[j], end=" ")
+            print("")

@@ -44,7 +44,6 @@ class Lexer:
         "signed",
         "struct",
         "switch",
-        "union",
         "unsigned",
         "void",
         "while",
@@ -133,11 +132,71 @@ class Lexer:
         r"(//.*|/\*(\*(?!/)|[^*])*\*/)"
         t.lexer.lineno += t.value.count("\n")
 
+    def t_null(self, t):
+        r"NULL"
+        t.type = "INTEGER_CONSTANT"
+        t.value = 0
+        return t
+
+    def t_imin(self, t):
+        r"INT_MIN"
+        t.type = "INTEGER_CONSTANT"
+        t.value = -(2 ** 31)
+
+    def t_imax(self, t):
+        r"INT_MAX"
+        t.type = "INTEGER_CONSTANT"
+        t.value = 2 ** 31 - 1
+
+    def t_uimax(self, t):
+        r"UINT_MAX"
+        t.type = "INTEGER_CONSTANT"
+        t.value = 2 ** 32 - 1
+
+    def t_smin(self, t):
+        r"SHRT_MIN"
+        t.type = "INTEGER_CONSTANT"
+        t.value = -(2 ** 15)
+
+    def t_smax(self, t):
+        r"SHRT_MAX"
+        t.type = "INTEGER_CONSTANT"
+        t.value = 2 ** 15 - 1
+
+    def t_fmin(self, t):
+        r"FLT_MIN"
+        t.type = "FLOAT_CONSTANT"
+        t.value = 0.0000000000000000000000000000000000000117549435082228750
+
+    def t_fmax(self, t):
+        r"FLT_MAX"
+        t.type = "FLOAT_CONSTANT"
+        t.value = 340282346638528859811704183484516925440.0000000000000000
+
+    def t_cmin(self, t):
+        r"CHAR_MIN"
+        t.type = "CHAR_CONSTANT"
+        t.value = -(2 ** 7)
+
+    def t_cmax(self, t):
+        r"CHAR_MAX"
+        t.type = "CHAR_CONSTANT"
+        t.value = 2 ** 7 - 1
+
     def t_IDENTIFIER(self, t):
         r"[\_a-zA-Z]+[a-zA-Z0-9\_]*"
         t.type = self.keywords_dict.get(
             t.value, "IDENTIFIER"
         )  # Check for reserved words
+        if t.type == "BOOL":
+            t.type = "INT"
+            t.value = "int"
+        if t.type == "TRUE":
+            t.type = "INTEGER_CONSTANT"
+            t.value = 1
+        if t.type == "FALSE":
+            t.type = "INTEGER_CONSTANT"
+            t.value = 0
         if t.type == "IDENTIFIER":
             contents = {"line": t.lineno}
             t.value = {"lexeme": t.value, "additional": contents}
@@ -167,20 +226,26 @@ class Lexer:
         if len(t.value) == 1:
             t.value = ord(t.value)
         else:
-            if t.value == "\b":
+            if t.value == str('\\"'):
+                t.value = '\\"'
+                t.value = "'" + t.value + "'"
+            elif t.value == str("\\'"):
+                t.value = "\\'"
+                t.value = "'" + t.value + "'"
+            elif t.value == "\\b":
                 t.value = ord("\b")
-            elif t.value == "\t":
+            elif t.value == "\\t":
                 t.value = ord("\t")
-            elif t.value == "\n":
+            elif t.value == "\\n":
                 t.value = ord("\n")
-            elif t.value == "\0":
+            elif t.value == "\\0":
                 t.value = ord("\0")
 
         return t
 
     # Float constants
     # float can be with or without exponent
-    @lex.TOKEN(r"([+-]?[0-9]+(\.[0-9]*)?" + "(" + EXPONENT + "))|([+-]?[0-9]*\.[0-9]+)")
+    @lex.TOKEN(r"([0-9]+(\.[0-9]*)?" + "(" + EXPONENT + "))|([0-9]*\.[0-9]+)")
     def t_FLOAT_CONSTANT(self, t):
         t.value = float(t.value)
         t.type = "FLOAT_CONSTANT"

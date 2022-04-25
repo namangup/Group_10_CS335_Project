@@ -4,8 +4,8 @@ int main()
     int a;
     float b;
     char c;
-    a = 5;
-    b = 6.5;
+    a = -5;
+    b = -6.5;
     c = 'a';
     for (int i = b; i <= a + 100; i++)
         ;
