@@ -4739,7 +4739,6 @@ class Parser:
                 if "unsigned" in p[1].type or "unsigned" in p[3].type:
                     p[0].type.append("unsigned")
                     p[0].label += "_unsigned"
-                p[0].node.attr["label"] = p[0].label
 
                 flag = True
                 for i in p0type:

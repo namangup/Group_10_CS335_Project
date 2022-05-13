@@ -305,7 +305,7 @@ class SymbolTable:
     def push_scope(self, three_address_code):
         self.offset_list.append(self.offset)
 
-        temporary_ptr = -20
+        temporary_ptr = 0
         for item in self.top_scope.keys():
             if (
                 item != "scope"

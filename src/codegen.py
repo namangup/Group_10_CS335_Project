@@ -117,7 +117,7 @@ class CodeGenerator:
             else:
                 self.register_stack.insert(off, register_index)
 
-    def check_type(
+    def mov_vals(
         self,
         instruction,
         request_register1=None,
@@ -288,7 +288,7 @@ class CodeGenerator:
         check = instruction[0][2:]
         type_chk = ["char", "float"]
         if type_chk[0] == instruction[0][2:]:
-            self.check_type(instruction, "%edx", "%eax", False, False, True)
+            self.mov_vals(instruction, "%edx", "%eax", False, False, True)
             emit_instruction1 = "addl"
             emit_instruction2 = "movb"
             instruction[1] = self.dereference(instruction[1])
@@ -313,7 +313,7 @@ class CodeGenerator:
             self.emit_code(emit_instruction3, reg1)
 
         else:
-            self.check_type(instruction)
+            self.mov_vals(instruction)
             emit_instruction1 = "addl"
             emit_instruction2 = "movl"
             instruction[1] = self.dereference(instruction[1])
@@ -344,7 +344,7 @@ class CodeGenerator:
         check = instruction[0][2:]
         type_chk = ["char", "float"]
         if type_chk[0] == instruction[0][2:]:
-            self.check_type(instruction, "%edx", "%eax", False, False, True)
+            self.mov_vals(instruction, "%edx", "%eax", False, False, True)
             emit_instruction1 = "subl"
             emit_instruction2 = "movb"
             instruction[1] = self.dereference(instruction[1])
@@ -368,7 +368,7 @@ class CodeGenerator:
             self.emit_code(emit_instruction2, reg3)
             self.emit_code(emit_instruction3, reg1)
         else:
-            self.check_type(instruction)
+            self.mov_vals(instruction)
             emit_instruction1 = "subl"
             emit_instruction2 = "movl"
             instruction[1] = self.dereference(instruction[1])
@@ -439,7 +439,7 @@ class CodeGenerator:
             self.emit_code(emit_instruction3, reg1)
 
         else:
-            self.check_type(instruction)
+            self.mov_vals(instruction)
             emit_instruction2 = "movl"
             instruction[1] = self.dereference(instruction[1])
             self.emit_code(emit_instruction2, instruction[2], instruction[1])
@@ -458,7 +458,7 @@ class CodeGenerator:
         check = instruction[0][2:]
         type_chk = ["char", "float", "int"]
         if type_chk[0] == instruction[0][2:]:
-            self.check_type(instruction, "%eax", "%edx", False, False, True)
+            self.mov_vals(instruction, "%eax", "%edx", False, False, True)
             emit_instruction1 = "imull"
             emit_instruction2 = "movb"
             self.emit_code(emit_instruction1, instruction[2], instruction[3])
@@ -476,7 +476,7 @@ class CodeGenerator:
             self.emit_code(emit_instruction3, reg1)
 
         elif type_chk[2] == instruction[0][2:]:
-            self.check_type(instruction)
+            self.mov_vals(instruction)
             emit_instruction1 = "imull"
             emit_instruction2 = "movl"
             self.emit_code(emit_instruction1, instruction[2], instruction[3])
@@ -484,7 +484,7 @@ class CodeGenerator:
             self.free_register(instruction[2])
             self.free_register(instruction[3])
         else:
-            self.check_type(instruction)
+            self.mov_vals(instruction)
             emit_instruction1 = "imull"
             emit_instruction2 = "movl"
             self.emit_code(emit_instruction1, instruction[2], instruction[3])
@@ -508,7 +508,7 @@ class CodeGenerator:
             emit_instruction4 = "movb"
             tg1 = "%edx"
             tg2 = "%eax"
-            self.check_type(instruction, "%ecx", "%ebx", False, False, True)
+            self.mov_vals(instruction, "%ecx", "%ebx", False, False, True)
             self.emit_code(emit_instruction1, instruction[2], "%eax")
             self.emit_code(emit_instruction2)
             self.emit_code(emit_instruction3, instruction[3])
@@ -540,7 +540,7 @@ class CodeGenerator:
             emit_instruction4 = "movl"
             tg1 = "%edx"
             tg2 = "%eax"
-            self.check_type(instruction)
+            self.mov_vals(instruction)
             self.emit_code(emit_instruction1, instruction[2], "%eax")
             self.emit_code(emit_instruction2)
             self.emit_code(emit_instruction3, instruction[3])
@@ -562,7 +562,7 @@ class CodeGenerator:
             emit_instruction4 = "movl"
             tg1 = "%edx"
             tg2 = "%eax"
-            self.check_type(instruction)
+            self.mov_vals(instruction)
             self.emit_code(emit_instruction1, instruction[2], "%eax")
             self.emit_code(emit_instruction2)
             self.emit_code(emit_instruction3, instruction[3])
@@ -585,7 +585,7 @@ class CodeGenerator:
         tg2 = "%eax"
         check = instruction[0][2:]
         if type_chk[0] == instruction[0][2:]:
-            self.check_type(instruction, "%ebx", "%ecx", False, False, True)
+            self.mov_vals(instruction, "%ebx", "%ecx", False, False, True)
             emit_instruction1 = "movl"
             emit_instruction2 = "cltd"
             emit_instruction3 = "idivl"
@@ -598,7 +598,7 @@ class CodeGenerator:
             self.free_register(instruction[3])
 
         elif type_chk[1] == instruction[0][2:]:
-            self.check_type(instruction)
+            self.mov_vals(instruction)
             emit_instruction1 = "movl"
             emit_instruction2 = "cltd"
             emit_instruction3 = "idivl"
@@ -613,7 +613,7 @@ class CodeGenerator:
             self.free_register(instruction[3])
 
         else:
-            self.check_type(instruction)
+            self.mov_vals(instruction)
             emit_instruction1 = "movl"
             emit_instruction2 = "cltd"
             emit_instruction3 = "idivl"
@@ -632,19 +632,19 @@ class CodeGenerator:
         type_chk = ["char", "int"]
         emit_inst = ["andl", "movb", "movl"]
         if type_chk[0] == instruction[0][2:]:
-            self.check_type(instruction, "%eax", "%edx", False, False, True)
+            self.mov_vals(instruction, "%eax", "%edx", False, False, True)
             self.emit_code(emit_inst[0], instruction[2], instruction[3])
             self.emit_code(emit_inst[1], "%dl", instruction[1])
             self.free_register(instruction[2])
             self.free_register(instruction[3])
         elif type_chk[1] == instruction[0][2:]:
-            self.check_type(instruction)
+            self.mov_vals(instruction)
             self.emit_code(emit_inst[0], instruction[2], instruction[3])
             self.emit_code(emit_inst[2], instruction[3], instruction[1])
             self.free_register(instruction[2])
             self.free_register(instruction[3])
         else:
-            self.check_type(instruction)
+            self.mov_vals(instruction)
             self.emit_code(emit_inst[0], instruction[2], instruction[3])
             self.emit_code(emit_inst[2], instruction[3], instruction[1])
             self.free_register(instruction[2])
@@ -657,7 +657,7 @@ class CodeGenerator:
         if type_chk[0] == instruction[0][2:]:
             emit_instruction1 = emit_inst[0]
             emit_instruction2 = emit_inst[1]
-            self.check_type(instruction, "%eax", "%edx", False, False, True)
+            self.mov_vals(instruction, "%eax", "%edx", False, False, True)
             self.emit_code(emit_instruction1, instruction[2], instruction[3])
             self.emit_code(emit_instruction2, "%dl", instruction[1])
             self.free_register(instruction[2])
@@ -665,7 +665,7 @@ class CodeGenerator:
         elif type_chk[1] == instruction[0][2:]:
             emit_instruction1 = emit_inst[0]
             emit_instruction2 = emit_inst[2]
-            self.check_type(instruction)
+            self.mov_vals(instruction)
             self.emit_code(emit_instruction1, instruction[2], instruction[3])
             self.emit_code(emit_instruction2, instruction[3], instruction[1])
             self.free_register(instruction[2])
@@ -673,7 +673,7 @@ class CodeGenerator:
         else:
             emit_instruction1 = emit_inst[0]
             emit_instruction2 = emit_inst[2]
-            self.check_type(instruction)
+            self.mov_vals(instruction)
             self.emit_code(emit_instruction1, instruction[2], instruction[3])
             self.emit_code(emit_instruction2, instruction[3], instruction[1])
             self.free_register(instruction[2])
@@ -685,20 +685,20 @@ class CodeGenerator:
         type_chk = ["char", "int"]
         emit_inst = ["xorl", "movb", "movl"]
         if type_chk[0] == instruction[0][2:]:
-            self.check_type(instruction, "%eax", "%edx", False, False, True)
+            self.mov_vals(instruction, "%eax", "%edx", False, False, True)
             self.emit_code(emit_inst[0], instruction[2], instruction[3])
             self.emit_code(emit_inst[1], "%dl", instruction[1])
             self.free_register(instruction[2])
             self.free_register(instruction[3])
 
         elif type_chk[1] == instruction[0][2:]:
-            self.check_type(instruction)
+            self.mov_vals(instruction)
             self.emit_code(emit_inst[0], instruction[2], instruction[3])
             self.emit_code(emit_inst[2], instruction[3], instruction[1])
             self.free_register(instruction[2])
             self.free_register(instruction[3])
         else:
-            self.check_type(instruction)
+            self.mov_vals(instruction)
             self.emit_code(emit_inst[0], instruction[2], instruction[3])
             self.emit_code(emit_inst[2], instruction[3], instruction[1])
             self.free_register(instruction[2])
@@ -714,14 +714,14 @@ class CodeGenerator:
         type_chk = ["char", "int"]
         emit_inst = ["shl", "movb", "movl"]
         if check == type_chk[0]:
-            self.check_type(instruction, "%eax", "%ecx", False, False, True)
+            self.mov_vals(instruction, "%eax", "%ecx", False, False, True)
             self.emit_code(emit_inst[0], "%cl", instruction[2])
             self.emit_code(emit_inst[1], "%al", instruction[1])
             self.free_register(instruction[2])
             self.free_register(instruction[3], True)
 
         elif check == type_chk[1]:
-            self.check_type(instruction, None, "%ecx")
+            self.mov_vals(instruction, None, "%ecx")
             self.emit_code(emit_inst[0], "%cl", instruction[2])
             self.emit_code(emit_inst[2], instruction[2], instruction[1])
             self.free_register(instruction[2])
@@ -729,7 +729,7 @@ class CodeGenerator:
 
         else:
             check_register = "%ecx"
-            self.check_type(instruction, None, check_register)
+            self.mov_vals(instruction, None, check_register)
             self.emit_code(emit_inst[0], "%cl", instruction[2])
             self.emit_code(emit_inst[2], instruction[2], instruction[1])
             self.free_register(instruction[2])
@@ -745,20 +745,20 @@ class CodeGenerator:
         type_chk = ["int", "char"]
         emit_inst = ["shr", "movb", "movl"]
         if check == type_chk[1]:
-            self.check_type(instruction, "%eax", "%ecx", False, False, True)
+            self.mov_vals(instruction, "%eax", "%ecx", False, False, True)
             self.emit_code(emit_inst[0], "%cl", instruction[2])
             self.emit_code(emit_inst[1], "%al", instruction[1])
             # self.free_register(instruction[2])
             # self.free_register(instruction[3], True)
         elif check == type_chk[0]:
             check_reg = "%ecx"
-            self.check_type(instruction, None, check_reg)
+            self.mov_vals(instruction, None, check_reg)
             self.emit_code(emit_inst[0], "%cl", instruction[2])
             self.emit_code(emit_inst[2], instruction[2], instruction[1])
             # self.free_register(instruction[2])
             # self.free_register(instruction[3], True)
         else:
-            self.check_type(instruction, None, "%ecx")
+            self.mov_vals(instruction, None, "%ecx")
             self.emit_code(emit_inst[0], "%cl", instruction[2])
             self.emit_code(emit_inst[2], instruction[2], instruction[1])
             # self.free_register(instruction[2])
@@ -1033,12 +1033,12 @@ class CodeGenerator:
         typ_check = ["int", "char", "float"]
         emit_inst = ["negl", "movb", "movl"]
         if check == typ_check[0]:
-            self.check_type(instruction)
+            self.mov_vals(instruction)
             self.emit_code(emit_inst[0], instruction[2])
             self.emit_code(emit_inst[2], instruction[2], instruction[1])
             self.free_register(instruction[2])
         elif check == typ_check[1]:
-            self.check_type(instruction, "%eax", None, False, False, True)
+            self.mov_vals(instruction, "%eax", None, False, False, True)
             self.emit_code(emit_inst[0], instruction[2])
             self.emit_code(emit_inst[1], "%al", instruction[1])
             self.free_register(instruction[2])
@@ -1048,7 +1048,7 @@ class CodeGenerator:
             self.emit_code("fchs", "")
             self.emit_code("fstps", reg1)
         else:  # kept same as int
-            self.check_type(instruction)
+            self.mov_vals(instruction)
             self.emit_code(emit_inst[0], instruction[2])
             self.emit_code(emit_inst[2], instruction[2], instruction[1])
             self.free_register(instruction[2])
@@ -1063,17 +1063,17 @@ class CodeGenerator:
         typ_chk = ["int", "char"]
         emit_inst = ["notl", "movb", "movl"]
         if check == typ_chk[1]:
-            self.check_type(instruction, "%eax", None, False, False, True)
+            self.mov_vals(instruction, "%eax", None, False, False, True)
             self.emit_code(emit_inst[0], instruction[2])
             self.emit_code(emit_inst[1], "%al", instruction[1])
             self.free_register(instruction[2])
         elif check == typ_chk[0]:
-            self.check_type(instruction)
+            self.mov_vals(instruction)
             self.emit_code(emit_inst[0], instruction[2])
             self.emit_code(emit_inst[2], instruction[2], instruction[1])
             self.free_register(instruction[2])
         else:
-            self.check_type(instruction)
+            self.mov_vals(instruction)
             self.emit_code(emit_inst[0], instruction[2])
             self.emit_code(emit_inst[2], instruction[2], instruction[1])
             self.free_register(instruction[2])
@@ -1106,7 +1106,7 @@ class CodeGenerator:
         mov_inst = ["movl", "movb"]
 
         if instruction[0][3:] == typ_chk[0] or instruction[0][2:] == typ_chk[0]:
-            self.check_type(instruction)
+            self.mov_vals(instruction)
             self.emit_code(comp_inst, instruction[3], instruction[2])
 
             reg = self.request_register("%edx")
@@ -1131,7 +1131,7 @@ class CodeGenerator:
             # self.free_register(reg)
         elif instruction[0][2:6] == typ_chk[1] or instruction[0][3:7] == typ_chk[1]:
 
-            self.check_type(instruction, "%eax", "%ecx", False, False, True)
+            self.mov_vals(instruction, "%eax", "%ecx", False, False, True)
             self.emit_code(comp_inst, instruction[3], instruction[2])
 
             reg = self.request_register("%edx")
@@ -1236,7 +1236,7 @@ class CodeGenerator:
             self.free_register(reg)
             return
         else:
-            self.check_type(instruction)
+            self.mov_vals(instruction)
             self.emit_code(comp_inst, instruction[3], instruction[2])
             reg = self.request_register("%edx")
             reg = self.register_mapping[reg]
@@ -1266,7 +1266,7 @@ class CodeGenerator:
         typ_chk = ["int", "char"]
         emit_inst = ["cmpl", "sete", "movzbl", "movb", "movl"]
         if instruction[0][7:] == typ_chk[1]:
-            self.check_type(instruction, "%eax", None, False, False, True)
+            self.mov_vals(instruction, "%eax", None, False, False, True)
             self.emit_code(emit_inst[0], "$0", instruction[2])
             reg = self.request_register("%edx")
             reg = self.register_mapping[reg]
@@ -1278,7 +1278,7 @@ class CodeGenerator:
             self.free_register("%edx")
 
         elif instruction[0][7:] == typ_chk[0]:
-            self.check_type(instruction)
+            self.mov_vals(instruction)
             self.emit_code(emit_inst[0], "$0", instruction[2])
             reg = self.request_register("%edx")
             reg = self.register_mapping[reg]
@@ -1290,7 +1290,7 @@ class CodeGenerator:
             self.free_register("%edx")
 
         else:
-            self.check_type(instruction)
+            self.mov_vals(instruction)
             self.emit_code(emit_inst[0], "$0", instruction[2])
             reg = self.request_register("%edx")
             reg = self.register_mapping[reg]
